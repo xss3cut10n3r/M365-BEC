@@ -793,6 +793,16 @@ static void test_pivots(void) {
     sqlite3_close(db);
 }
 
+// Indicators count what they filter.
+static void test_indicators(void) {
+    sqlite3 *db = open_case("indicators.bec");
+    g_free(put("padded-ops.csv", "Operation,Status\nSend,Success\n\" Send \",\" Failure \"\nsendas,FAILED\n"));
+    CHECK(load(db, "padded-ops.csv", NULL) == IMPORT_DONE);
+    CHECK(report_total(db, "indicators", "Messages sent") == 3);
+    CHECK(report_total(db, "indicators", "Failures and interrupted operations") == 2);
+    sqlite3_close(db);
+}
+
 int main(void) {
     root = g_dir_make_tmp("bec-test-XXXXXX", NULL);
     test_text();
@@ -810,6 +820,7 @@ int main(void) {
     test_workbooks();
     test_handoff();
     test_pivots();
+    test_indicators();
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

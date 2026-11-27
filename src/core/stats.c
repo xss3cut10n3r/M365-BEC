@@ -131,9 +131,10 @@ static GPtrArray *indicators(sqlite3 *db, gint64 log, const char *filter, GError
         g_ptr_array_free(args, TRUE);
         return NULL;
     }
-    char *sql = g_strconcat("SELECT e.op,e.result,count(*),min(nullif(e.time,'')),max(nullif(e.time,''))"
+    // Fold exactly like filters.
+    char *sql = g_strconcat("SELECT bql_fold(e.op),bql_fold(e.result),count(*),min(nullif(e.time,'')),max(nullif(e.time,''))"
                             " FROM events e JOIN logs l ON l.id=e.log",
-                            clause, " GROUP BY e.op COLLATE NOCASE,e.result COLLATE NOCASE", NULL);
+                            clause, " GROUP BY 1,2", NULL);
     GPtrArray *rows = g_ptr_array_new_with_free_func((GDestroyNotify)stat_row_free);
     for (guint i = 0; i < G_N_ELEMENTS(INDICATORS); i++) {
         StatRow *row = g_new0(StatRow, 1);
@@ -146,15 +147,14 @@ static GPtrArray *indicators(sqlite3 *db, gint64 log, const char *filter, GError
         args_bind(statement, args, 1);
         int state;
         while ((state = sqlite3_step(statement)) == SQLITE_ROW) {
-            char *op = g_utf8_strdown(column_text(statement, 0), -1);
-            char *result = g_utf8_strdown(column_text(statement, 1), -1);
+            const char *op = column_text(statement, 0), *result = column_text(statement, 1);
             const char *first = (const char *)sqlite3_column_text(statement, 3);
             const char *last = (const char *)sqlite3_column_text(statement, 4);
             for (guint i = 0; i < G_N_ELEMENTS(INDICATORS); i++) {
                 const char *value = INDICATORS[i].result ? result : op;
                 gboolean hit = FALSE;
                 for (int k = 0; k < 6 && INDICATORS[i].values[k] && !hit; k++) {
-                    char *wanted = g_utf8_strdown(INDICATORS[i].values[k], -1);
+                    char *wanted = casefold(INDICATORS[i].values[k]);
                     hit = INDICATORS[i].contains ? strstr(value, wanted) != NULL : !strcmp(value, wanted);
                     g_free(wanted);
                 }
@@ -171,8 +171,6 @@ static GPtrArray *indicators(sqlite3 *db, gint64 log, const char *filter, GError
                     row->last = g_strdup(last);
                 }
             }
-            g_free(op);
-            g_free(result);
         }
         if (state != SQLITE_DONE) {
             bec_fail(error, "%s", sqlite3_errmsg(db));
