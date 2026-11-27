@@ -155,6 +155,80 @@ static void remember_view(App *app) {
 
 static void switched(App *app, int index);
 
+static GtkAdjustment *tab_adjustment(App *app) {
+    return gtk_scrolled_window_get_hadjustment(GTK_SCROLLED_WINDOW(app->tab_scroll));
+}
+
+static void tab_arrows(GtkAdjustment *adjustment, gpointer user) {
+    App *app = user;
+    double value = gtk_adjustment_get_value(adjustment), page = gtk_adjustment_get_page_size(adjustment);
+    double lower = gtk_adjustment_get_lower(adjustment), upper = gtk_adjustment_get_upper(adjustment);
+    gboolean overflow = upper - lower > page + 1;
+    gtk_widget_set_visible(app->tab_left, overflow);
+    gtk_widget_set_visible(app->tab_right, overflow);
+    gtk_widget_set_sensitive(app->tab_left, value > lower + 1);
+    gtk_widget_set_sensitive(app->tab_right, value < upper - page - 1);
+}
+
+static void tab_scroll_clicked(GtkButton *button, gpointer user) {
+    App *app = user;
+    GtkAdjustment *adjustment = tab_adjustment(app);
+    // Arrows scroll, never switch.
+    double step = gtk_adjustment_get_page_size(adjustment) * 0.6;
+    double value = gtk_adjustment_get_value(adjustment) + (GTK_WIDGET(button) == app->tab_left ? -step : step);
+    double last = gtk_adjustment_get_upper(adjustment) - gtk_adjustment_get_page_size(adjustment);
+    gtk_adjustment_set_value(adjustment, CLAMP(value, gtk_adjustment_get_lower(adjustment), MAX(last, 0)));
+}
+
+static gboolean tab_reveal(gpointer user) {
+    App *app = user;
+    app->tab_reveal = 0;
+    int current = gtk_notebook_get_current_page(GTK_NOTEBOOK(app->tabs));
+    GtkWidget *page = current < 0 ? NULL : gtk_notebook_get_nth_page(GTK_NOTEBOOK(app->tabs), current);
+    GtkWidget *header = page ? gtk_notebook_get_tab_label(GTK_NOTEBOOK(app->tabs), page) : NULL;
+    GtkWidget *tab = header ? gtk_widget_get_parent(header) : NULL;
+    graphene_rect_t bounds;
+    if (!tab || !gtk_widget_compute_bounds(tab, app->tabs, &bounds))
+        return G_SOURCE_REMOVE;
+    GtkAdjustment *adjustment = tab_adjustment(app);
+    double value = gtk_adjustment_get_value(adjustment), page_size = gtk_adjustment_get_page_size(adjustment);
+    if (bounds.origin.x < value)
+        gtk_adjustment_set_value(adjustment, bounds.origin.x);
+    else if (bounds.origin.x + bounds.size.width > value + page_size)
+        gtk_adjustment_set_value(adjustment, bounds.origin.x + bounds.size.width - page_size);
+    return G_SOURCE_REMOVE;
+}
+
+static void tab_show_current(App *app) {
+    // Wait for tab layout.
+    if (!app->tab_reveal)
+        app->tab_reveal = g_timeout_add(60, tab_reveal, app);
+}
+
+static gboolean tab_key(GtkEventControllerKey *controller, guint key, guint code, GdkModifierType state, gpointer user) {
+    (void)controller;
+    (void)code;
+    App *app = user;
+    gboolean control = (state & GDK_CONTROL_MASK) != 0, other = (state & (GDK_SHIFT_MASK | GDK_ALT_MASK)) != 0;
+    int step = 0;
+    if (!control && !other && (key == GDK_KEY_Left || key == GDK_KEY_KP_Left))
+        step = -1;
+    else if (!control && !other && (key == GDK_KEY_Right || key == GDK_KEY_KP_Right))
+        step = 1;
+    else if (control && !other && (key == GDK_KEY_Page_Up || key == GDK_KEY_KP_Page_Up))
+        step = -1;
+    else if (control && !other && (key == GDK_KEY_Page_Down || key == GDK_KEY_KP_Page_Down))
+        step = 1;
+    if (!step)
+        return FALSE;
+    // Ends stop, never wrap.
+    int current = gtk_notebook_get_current_page(GTK_NOTEBOOK(app->tabs));
+    int target = current + step;
+    if (current >= 0 && target >= 0 && target < gtk_notebook_get_n_pages(GTK_NOTEBOOK(app->tabs)))
+        gtk_notebook_set_current_page(GTK_NOTEBOOK(app->tabs), target);
+    return TRUE;
+}
+
 static void close_index(App *app, int index) {
     if (index < 0 || index >= gtk_notebook_get_n_pages(GTK_NOTEBOOK(app->tabs)))
         return;
@@ -244,6 +318,7 @@ static void switched(App *app, int index) {
     gtk_stack_set_visible_child_name(GTK_STACK(app->pages), "work");
     gtk_editable_set_text(GTK_EDITABLE(app->entry), app_view(app)->draft);
     update_actions(app);
+    tab_show_current(app);
     app_refresh(app);
 }
 
@@ -2018,11 +2093,39 @@ App *app_new(GtkApplication *gtk) {
     gtk_stack_add_named(GTK_STACK(app->pages), work, "work");
     GtkWidget *strip = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
     app->tabs = gtk_notebook_new();
-    gtk_notebook_set_scrollable(GTK_NOTEBOOK(app->tabs), TRUE);
     gtk_notebook_set_show_border(GTK_NOTEBOOK(app->tabs), FALSE);
-    gtk_widget_set_hexpand(app->tabs, TRUE);
+    gtk_widget_set_halign(app->tabs, GTK_ALIGN_START);
     g_signal_connect(app->tabs, "switch-page", G_CALLBACK(page_switched), app);
-    gtk_box_append(GTK_BOX(strip), app->tabs);
+    GtkEventController *tab_keys = gtk_event_controller_key_new();
+    gtk_event_controller_set_propagation_phase(tab_keys, GTK_PHASE_CAPTURE);
+    g_signal_connect(tab_keys, "key-pressed", G_CALLBACK(tab_key), app);
+    gtk_widget_add_controller(app->tabs, tab_keys);
+    // Own arrows only scroll.
+    app->tab_scroll = gtk_scrolled_window_new();
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(app->tab_scroll), GTK_POLICY_EXTERNAL, GTK_POLICY_NEVER);
+    GtkWidget *tab_port = gtk_viewport_new(NULL, NULL);
+    // Focus must not rewind.
+    gtk_viewport_set_scroll_to_focus(GTK_VIEWPORT(tab_port), FALSE);
+    gtk_viewport_set_child(GTK_VIEWPORT(tab_port), app->tabs);
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(app->tab_scroll), tab_port);
+    gtk_widget_set_hexpand(app->tab_scroll, TRUE);
+    static const char *const arrows[][2] = {{"\xe2\x80\xb9", "Scroll tabs left"}, {"\xe2\x80\xba", "Scroll tabs right"}};
+    for (int i = 0; i < 2; i++) {
+        GtkWidget *arrow = gtk_button_new_with_label(arrows[i][0]);
+        gtk_widget_add_css_class(arrow, "tool");
+        gtk_widget_add_css_class(arrow, "tabArrow");
+        gtk_widget_set_focusable(arrow, FALSE);
+        gtk_widget_set_tooltip_text(arrow, arrows[i][1]);
+        gtk_accessible_update_property(GTK_ACCESSIBLE(arrow), GTK_ACCESSIBLE_PROPERTY_LABEL, arrows[i][1], -1);
+        gtk_widget_set_visible(arrow, FALSE);
+        g_signal_connect(arrow, "clicked", G_CALLBACK(tab_scroll_clicked), app);
+        *(i ? &app->tab_right : &app->tab_left) = arrow;
+    }
+    gtk_box_append(GTK_BOX(strip), app->tab_left);
+    gtk_box_append(GTK_BOX(strip), app->tab_scroll);
+    gtk_box_append(GTK_BOX(strip), app->tab_right);
+    g_signal_connect(tab_adjustment(app), "changed", G_CALLBACK(tab_arrows), app);
+    g_signal_connect(tab_adjustment(app), "value-changed", G_CALLBACK(tab_arrows), app);
     GtkWidget *open_tab = gtk_menu_button_new();
     gtk_menu_button_set_label(GTK_MENU_BUTTON(open_tab), "+");
     gtk_widget_add_css_class(open_tab, "tool");

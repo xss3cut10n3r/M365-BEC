@@ -50,7 +50,9 @@ struct App {
     GPtrArray *stats;
     // Widgets follow.
     GtkWidget *entry, *pages, *tabs, *split, *status, *scope, *warnings, *case_bar, *case_name, *case_detail,
-        *case_saved, *recent_list, *welcome_case, *welcome_title, *welcome_text, *toolbar;
+        *case_saved, *recent_list, *welcome_case, *welcome_title, *welcome_text, *toolbar, *tab_scroll, *tab_left,
+        *tab_right;
+    guint tab_reveal;
     Timeline *timeline;
     Inspector *inspector;
     GMenu *recent_menu, *log_menu, *filter_menu;
