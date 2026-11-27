@@ -21,6 +21,7 @@ gboolean contains_folded(const char *haystack, const char *folded_needle);
 gboolean equals_folded(const char *value, const char *folded_needle);
 char *utc_normalize(const char *value);
 char *utc_from_epoch(gint64 seconds);
+char *utc_label(const char *stamp, gboolean minutes);
 char *utc_after(const char *stamp);
 char *ip_normalize(const char *value);
 char *group_digits(gint64 value);

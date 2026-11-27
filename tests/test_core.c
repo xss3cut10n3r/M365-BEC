@@ -949,6 +949,16 @@ static void test_ticks(void) {
     CHECK(count(db, "time = \"2026-02-01T01:00:00.1234561Z\"") == 1 && count(db, "time = \"2026-02-01T01:00:00.1234500Z\"") == 1);
     CHECK(count(db, "time >= \"2026-02-01T01:00:00.1234569Z\"") == 1 && count(db, "time < \"2026-02-01T01:00:00.1234569Z\"") == 2);
     CHECK(count(db, "time > \"2026-02-01T01:00:00.123456Z\" AND time <= \"2026-02-01T01:00:00.1234561Z\"") == 1);
+    // Labels survive unrepresentable times.
+    char *limit = utc_from_epoch(253402300800), *blank = utc_label(limit, TRUE), *none = utc_label(NULL, FALSE);
+    char *usual = utc_from_epoch(1767355200), *label = utc_label(usual, TRUE), *whole = utc_label(usual, FALSE);
+    CHECK(!*limit && !*blank && !*none && !strcmp(label, "2026-01-02 12:00") && !strcmp(whole, "2026-01-02 12:00:00Z"));
+    g_free(limit);
+    g_free(blank);
+    g_free(none);
+    g_free(usual);
+    g_free(label);
+    g_free(whole);
     char *next = utc_after("2026-02-01T01:00:00.1234561Z"), *zone = utc_normalize("2026-02-01T03:00:00.1234561+02:00");
     CHECK(!strcmp(next, "2026-02-01T01:00:00.1234562Z") && !strcmp(zone, "2026-02-01T01:00:00.1234561Z"));
     g_free(next);

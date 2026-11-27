@@ -75,9 +75,9 @@ static gboolean job_done(gpointer data) {
             StatRow *row = stats->rows->pdata[i];
             double percent = stats->total ? 100.0 * (double)row->count / (double)stats->total : 0;
             char *events = group_digits(row->count), *share = g_strdup_printf("%.2f%%", percent);
-            char *stamp = activity ? utc_from_epoch(row->epoch) : NULL;
-            if (stamp)
-                stamp[10] = ' ';
+            char *whole = activity ? utc_from_epoch(row->epoch) : NULL;
+            char *stamp = activity ? utc_label(whole, FALSE) : NULL;
+            g_free(whole);
             GtkTreeIter iter;
             gtk_list_store_append(stats->store, &iter);
             gtk_list_store_set(stats->store, &iter, S_A, activity ? stamp : row->values[0], S_B, row->values[1], S_C,
@@ -291,10 +291,12 @@ static void plot_draw(GtkDrawingArea *area, cairo_t *cr, int width, int height, 
         cairo_rectangle(cr, x, y0 + h - tall, bar, tall);
     }
     cairo_fill(cr);
-    char *first = utc_from_epoch(start), *last = utc_from_epoch(end);
-    first[16] = last[16] = 0;
-    first[10] = last[10] = ' ';
-    char *last_label = g_strconcat(last, " UTC", NULL);
+    // Endpoints may be unrepresentable.
+    char *from = utc_from_epoch(start), *until = utc_from_epoch(end);
+    char *first = utc_label(from, TRUE), *last = utc_label(until, TRUE);
+    g_free(from);
+    g_free(until);
+    char *last_label = *last ? g_strconcat(last, " UTC", NULL) : g_strdup("");
     cairo_set_source_rgb(cr, 0xc2 / 255.0, 0xcb / 255.0, 0xcc / 255.0);
     plot_text(cr, widget, first, x0, height - 13, 0, 0);
     plot_text(cr, widget, last_label, x0, height - 13, w, 1);

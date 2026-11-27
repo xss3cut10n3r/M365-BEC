@@ -344,6 +344,18 @@ char *utc_from_epoch(gint64 seconds) {
     return format_micros(seconds * TICKS, FALSE);
 }
 
+// Formats a stamp for display.
+char *utc_label(const char *stamp, gboolean minutes) {
+    // Unrepresentable times format empty.
+    if (!stamp || strlen(stamp) < 19)
+        return g_strdup("");
+    char *label = g_strdup(stamp);
+    label[10] = ' ';
+    if (minutes)
+        label[16] = 0;
+    return label;
+}
+
 // Returns the next representable instant.
 char *utc_after(const char *stamp) {
     gint64 micros;
