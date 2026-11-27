@@ -29,7 +29,7 @@ const Report REPORTS[] = {
     {"locations", "Sign-in locations", {"location"}, {"Location"}, ""},
     {"applications", "Applications", {"application"}, {"Application"}, ""},
     {"clients", "Client operating systems", {"os"}, {"Operating system"}, ""},
-    {"methods", "Authentication steps", {"authmethod", "result"}, {"Method", "Recorded outcome"}, ""},
+    {"methods", "Authentication steps", {"authstep"}, {"Method and recorded outcome"}, ""},
     {"policies", "Conditional Access", {"conditionalaccess"}, {"Recorded result"}, ""},
     {"rules", "Inbox rule changes", {"operation", "rule"}, {"Operation", "Rule name or identity"}, ""},
     {"access", "Mailbox access types", {"access"}, {"Access type"}, ""},

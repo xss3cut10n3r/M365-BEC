@@ -13,6 +13,7 @@ const Slot SLOTS[] = {
     {"os", {"Operating System"}, {NULL}},
     {"client", {"Client app", "clientAppUsed"}, {"ClientInfoString"}},
     {"authmethod", {"Authentication method"}, {NULL}},
+    {"authstep", {NULL}, {NULL}},
     {"conditionalaccess", {"Conditional Access", "conditionalAccessStatus"}, {NULL}},
     {"serviceprincipal", {"Service principal ID", "ActorServicePrincipalId", "servicePrincipalId"}, {NULL}},
     {"workload", {"Service"}, {"Workload"}},
@@ -101,6 +102,11 @@ gboolean columns_support(const Columns *columns, const char *field) {
             return TRUE;
     // Graph nests device details.
     if ((!strcmp(field, "device") || !strcmp(field, "os")) && has(columns, "devicedetail"))
+        return TRUE;
+    // Graph nests authentication steps.
+    if ((!strcmp(field, "authmethod") || !strcmp(field, "authstep")) && has(columns, "authenticationdetails"))
+        return TRUE;
+    if (!strcmp(field, "authstep") && has(columns, "authentication method"))
         return TRUE;
     if (!strcmp(field, "target") && has(columns, "targetresources"))
         return TRUE;
@@ -241,6 +247,16 @@ static void split_recipients(GPtrArray *texts, const char *cell, gboolean status
     g_strfreev(entries);
 }
 
+// Pairs a method with its outcome.
+static void add_step(GPtrArray *texts, const JV *method, const JV *succeeded) {
+    if (!method || method->t != J_STR || !*method->u.s)
+        return;
+    char *outcome = j_text(succeeded, TRUE);
+    const char *label = !g_ascii_strcasecmp(outcome, "true") ? "Succeeded" : !g_ascii_strcasecmp(outcome, "false") ? "Failed" : outcome;
+    g_ptr_array_add(texts, *label ? g_strdup_printf("%s \xc2\xb7 %s", method->u.s, label) : g_strdup(method->u.s));
+    g_free(outcome);
+}
+
 static gboolean target_column(const char *clean) {
     if (!g_str_has_prefix(clean, "target") || !g_ascii_isdigit(clean[6]))
         return FALSE;
@@ -315,7 +331,29 @@ GPtrArray *event_values(EventFields *fields, const char *field) {
             for (guint i = 0; i < cells->len; i++)
                 add_text(texts, j_get(cells->pdata[i], field[0] == 'd' ? "deviceId" : "operatingSystem"));
         }
-        if (!strcmp(field, "session")) {
+        if (!strcmp(field, "authmethod") || !strcmp(field, "authstep")) {
+            gboolean steps = !strcmp(field, "authstep");
+            GPtrArray *outcomes = g_ptr_array_new();
+            if (steps) {
+                outer(fields, "Authentication method", cells);
+                outer(fields, "Succeeded", outcomes);
+            }
+            for (guint i = 0; steps && i < cells->len; i++)
+                add_step(texts, cells->pdata[i], i < outcomes->len ? outcomes->pdata[i] : NULL);
+            g_ptr_array_free(outcomes, TRUE);
+            g_ptr_array_set_size(cells, 0);
+            outer(fields, "authenticationDetails", cells);
+            for (guint i = 0; i < cells->len; i++) {
+                const JV *list = cells->pdata[i];
+                for (guint k = 0; list->t == J_ARR && k < list->n; k++) {
+                    const JV *method = j_get(list->u.a[k], "authenticationMethod");
+                    if (steps)
+                        add_step(texts, method, j_get(list->u.a[k], "succeeded"));
+                    else
+                        add_text(texts, method);
+                }
+            }
+        } else if (!strcmp(field, "session")) {
             add_text(texts, j_get(j_get(record, "AppAccessContext"), "AADSessionId"));
         } else if (!strcmp(field, "subject")) {
             add_text(texts, j_get(item, "Subject"));
@@ -639,7 +677,8 @@ static gboolean folded_hit(GPtrArray *found, const char *value, gboolean contain
 // Plain logs skip tree parsing.
 static gboolean plain_slot_values(Columns *columns, const char *field, const char *raw, GPtrArray *out) {
     if (has(columns, "auditdata") || flat_audit(columns) || !strcmp(field, "recipient") || !strcmp(field, "delivery") ||
-        !strcmp(field, "target") || has(columns, "devicedetail"))
+        !strcmp(field, "target") || !strcmp(field, "authstep") || has(columns, "devicedetail") ||
+        has(columns, "authenticationdetails"))
         return FALSE;
     const Slot *slot = slot_find(field);
     int indexes[32];

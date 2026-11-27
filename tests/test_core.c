@@ -790,6 +790,15 @@ static void test_pivots(void) {
     CHECK(load(db, "workload.json", NULL) == IMPORT_DONE);
     CHECK(count(db, "source = \"Graph sign-ins\" AND actor = \"Audit reader\" AND serviceprincipal = sp-2") == 1);
     CHECK(report_total(db, "outcomes", "Graph sign-ins") == 1);
+    // Each step keeps its outcome.
+    g_free(put("steps.json", "{\"createdDateTime\":\"2026-06-01T12:00:00Z\",\"userPrincipalName\":\"user@example.org\","
+                             "\"status\":{\"errorCode\":0},\"authenticationDetails\":[{\"authenticationMethod\":\"Password\","
+                             "\"succeeded\":true},{\"authenticationMethod\":\"Mobile app notification\",\"succeeded\":false}]}"));
+    g_free(put("InteractiveSignInsAuthDetails.csv", "Request ID,Authentication method,Succeeded\nq1,Password,false\n"));
+    CHECK(load(db, "steps.json", NULL) == IMPORT_DONE && load(db, "InteractiveSignInsAuthDetails.csv", NULL) == IMPORT_DONE);
+    CHECK(count(db, "authmethod = Password") == 2 && count(db, "authmethod = \"Mobile app notification\"") == 1);
+    CHECK(report_total(db, "methods", "Password \xc2\xb7 Succeeded") == 1 && report_total(db, "methods", "Password \xc2\xb7 Failed") == 1);
+    CHECK(report_total(db, "methods", "Mobile app notification \xc2\xb7 Failed") == 1 && report_total(db, "methods", NULL) == 3);
     sqlite3_close(db);
 }
 
