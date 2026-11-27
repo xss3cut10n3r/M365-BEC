@@ -968,6 +968,30 @@ static void test_ticks(void) {
     sqlite3_close(db);
 }
 
+// Workbooks reach non-ASCII folders.
+static void test_unicode_folder(void) {
+    sqlite3 *db = open_case("unicode.bec");
+    g_free(put("unicode.csv", "Operation\nOne\n"));
+    CHECK(load(db, "unicode.csv", NULL) == IMPORT_DONE);
+    char *folder = file("case folder \xe6\x9d\xb1"), *book = g_build_filename(folder, "\xe6\x9d\xb1.xlsx", NULL);
+    g_mkdir(folder, 0700);
+    gint64 written = 0;
+    GError *error = NULL;
+    CHECK(export_events(db, book, 0, "", FALSE, "time", NULL, &written, &error) && written == 1);
+    if (error)
+        printf("unicode export: %s\n", error->message);
+    g_clear_error(&error);
+    sqlite3 *fresh = open_case("unicode-again.bec");
+    CHECK(import_file(fresh, book, NULL, NULL, NULL) == IMPORT_DONE && count(fresh, "operation = One") == 1);
+    GDir *listing = g_dir_open(folder, 0, NULL);
+    CHECK(listing && g_dir_read_name(listing) && !g_dir_read_name(listing));
+    g_dir_close(listing);
+    sqlite3_close(fresh);
+    sqlite3_close(db);
+    g_free(folder);
+    g_free(book);
+}
+
 int main(void) {
     root = g_dir_make_tmp("bec-test-XXXXXX", NULL);
     test_text();
@@ -990,6 +1014,7 @@ int main(void) {
     test_json_values();
     test_json_handoff();
     test_ticks();
+    test_unicode_folder();
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
