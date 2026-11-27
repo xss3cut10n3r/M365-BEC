@@ -726,6 +726,21 @@ static void test_handoff(void) {
         g_free(label);
     }
     sqlite3_close(db);
+    // Every listed address stays searchable.
+    db = open_case("pair-source.bec");
+    g_free(put("pair.csv", "Request ID,IP address,IP address (seen by resource)\nr1,192.0.2.11,192.0.2.12\n"));
+    CHECK(load(db, "pair.csv", NULL) == IMPORT_DONE);
+    for (guint i = 0; i < G_N_ELEMENTS(formats); i++) {
+        char *name = g_strconcat("pair-out.", formats[i], NULL), *label = g_strconcat("pair-", formats[i], ".bec", NULL);
+        CHECK(save(db, name, ""));
+        sqlite3 *fresh = open_case(label);
+        CHECK(load(fresh, name, NULL) == IMPORT_DONE);
+        CHECK(count(fresh, "ip = 192.0.2.11") == 1 && count(fresh, "ip = 192.0.2.12") == 1 && count(fresh, "") == 1);
+        sqlite3_close(fresh);
+        g_free(name);
+        g_free(label);
+    }
+    sqlite3_close(db);
 }
 
 int main(void) {

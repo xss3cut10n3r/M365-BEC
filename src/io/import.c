@@ -269,7 +269,8 @@ gboolean importer_row(Importer *im, GPtrArray *values, const char *raw, const JV
                                              "global secure access ip address", "original_client_ip", "client_ip", "ip"};
     for (guint i = 0; i < G_N_ELEMENTS(ip_columns); i++) {
         const char *cell = GET(im, values, ip_columns[i]);
-        if (im->json && strstr(cell, ", ")) {
+        // Timeline cells list several addresses.
+        if (strstr(cell, ", ")) {
             char **parts = g_strsplit(cell, ", ", -1);
             for (char **part = parts; *part; part++)
                 add_address(ips, *part);
