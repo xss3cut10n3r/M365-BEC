@@ -10,13 +10,22 @@ endif()
 option(BEC_BUILD_UI "Build the GTK desktop app" ON)
 
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(CORE REQUIRED IMPORTED_TARGET glib-2.0 sqlite3 zlib expat libzip xlsxwriter yyjson)
+pkg_check_modules(CORE REQUIRED IMPORTED_TARGET glib-2.0 sqlite3 zlib expat libzip xlsxwriter)
+pkg_check_modules(YYJSON IMPORTED_TARGET yyjson)
+if(NOT YYJSON_FOUND)
+  # Older distributions lack yyjson.
+  include(FetchContent)
+  FetchContent_Declare(yyjson URL https://github.com/ibireme/yyjson/archive/refs/tags/0.10.0.tar.gz)
+  FetchContent_MakeAvailable(yyjson)
+  set_target_properties(yyjson PROPERTIES POSITION_INDEPENDENT_CODE ON)
+  add_library(PkgConfig::YYJSON ALIAS yyjson)
+endif()
 
 add_library(beccore STATIC
   src/core/text.c src/core/json.c src/core/fields.c src/core/bql.c
   src/core/store.c src/core/stats.c
   src/io/csv_read.c src/io/xlsx_read.c src/io/import.c src/io/export.c)
-target_link_libraries(beccore PUBLIC PkgConfig::CORE m)
+target_link_libraries(beccore PUBLIC PkgConfig::CORE PkgConfig::YYJSON m)
 target_compile_options(beccore PRIVATE -Wall -Wextra -Wno-unused-parameter)
 
 if(BEC_BUILD_UI)

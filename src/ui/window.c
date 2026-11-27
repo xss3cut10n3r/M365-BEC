@@ -1442,7 +1442,7 @@ static void activate(GSimpleAction *action, GVariant *parameter, gpointer user) 
         char *sql = g_strdup_printf("SELECT log,rownum FROM events WHERE id=%" G_GINT64_FORMAT, g_ascii_strtoll(text, NULL, 10));
         sqlite3_stmt *row = sql_prepare(app->db, sql, NULL);
         if (row && sqlite3_step(row) == SQLITE_ROW) {
-            char *filter = g_strdup_printf("row = %" G_GINT64_FORMAT, sqlite3_column_int64(row, 1));
+            char *filter = g_strdup_printf("row = %" G_GINT64_FORMAT, (gint64)sqlite3_column_int64(row, 1));
             gint64 log = sqlite3_column_int64(row, 0);
             sqlite3_finalize(row);
             row = NULL;

@@ -70,6 +70,8 @@ int main(int argc, char **argv) {
 #ifdef G_OS_WIN32
     // Use the native title bar.
     g_setenv("GTK_CSD", "0", FALSE);
+    // Software drawing starts faster.
+    g_setenv("GSK_RENDERER", "cairo", FALSE);
 #endif
     GtkApplication *gtk = gtk_application_new("io.github.xss3cut10n3r.M365BEC", G_APPLICATION_NON_UNIQUE);
     g_signal_connect(gtk, "activate", G_CALLBACK(activate), NULL);

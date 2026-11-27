@@ -16,5 +16,5 @@ ntldd -R build/win/M365-BEC.exe | grep -i 'ucrt64' | sed 's/.*=> \(.*\) (0x.*/\1
 cp "$ROOT/share/glib-2.0/schemas/gschemas.compiled" "$OUT/share/glib-2.0/schemas/"
 cp LICENSE "$OUT/"
 strip "$OUT"/*.exe "$OUT"/*.dll
-(cd dist/windows && rm -f M365-BEC-windows-x64.zip && tar.exe -a -c -f M365-BEC-windows-x64.zip M365-BEC)
+(cd dist/windows && rm -f M365-BEC-windows-x64.zip && powershell -NoProfile -Command "Compress-Archive -Path M365-BEC -DestinationPath M365-BEC-windows-x64.zip -CompressionLevel Optimal")
 du -sh "$OUT" dist/windows/M365-BEC-windows-x64.zip

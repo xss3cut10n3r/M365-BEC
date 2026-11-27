@@ -36,5 +36,5 @@ Exec=m365-bec %F
 Icon=m365-bec
 Categories=Utility;Security;
 EOF
-tar -C dist/linux -cJf dist/linux/M365-BEC-linux-x64.tar.xz M365-BEC
-du -sh "$OUT" dist/linux/M365-BEC-linux-x64.tar.xz
+tar -C dist/linux -czf dist/linux/M365-BEC-linux-x64.tar.gz M365-BEC
+du -sh "$OUT" dist/linux/M365-BEC-linux-x64.tar.gz

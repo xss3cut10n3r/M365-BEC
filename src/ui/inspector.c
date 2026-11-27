@@ -747,8 +747,8 @@ void inspector_set(Inspector *in, sqlite3 *db, const Record *record) {
             sqlite3_bind_text(links, 1, request, -1, SQLITE_TRANSIENT);
             sqlite3_bind_text(links, 2, target, -1, SQLITE_TRANSIENT);
             while (sqlite3_step(links) == SQLITE_ROW) {
-                g_ptr_array_add(rows, g_strdup_printf("%" G_GINT64_FORMAT, sqlite3_column_int64(links, 0)));
-                g_ptr_array_add(rows, g_strdup_printf("Row %" G_GINT64_FORMAT, sqlite3_column_int64(links, 1)));
+                g_ptr_array_add(rows, g_strdup_printf("%" G_GINT64_FORMAT, (gint64)sqlite3_column_int64(links, 0)));
+                g_ptr_array_add(rows, g_strdup_printf("Row %" G_GINT64_FORMAT, (gint64)sqlite3_column_int64(links, 1)));
                 g_ptr_array_add(rows, g_strdup_printf("%s \xc2\xb7 %s", column_text(links, 6), column_text(links, 7)));
                 g_ptr_array_add(rows, row_predicate(column_text(links, 4), column_text(links, 5), column_text(links, 3),
                                                     sqlite3_column_int64(links, 1)));

@@ -87,7 +87,7 @@ static const char CSS[] =
     ".statusbar separator { background: #515457; min-width: 1px; margin: 2px 0; }"
     ".banner { background: #b94f00; color: #ffffff; padding: 7px 11px; border-radius: 3px; }"
     ".heading { font-size: 13pt; font-weight: 600; color: #bcc3c5; padding: 14px 0 6px 0; }"
-    ".caseFile { color: #ffffff; font-weight: 700; font-size: 15pt; padding-bottom: 2px; }"
+    ".caseFile { color: #bcc3c5; font-weight: 600; font-size: 15pt; padding-bottom: 2px; }"
     ".recent { background: #262829; }"
     ".recent row { padding: 3px 6px; }"
     ".recent row:nth-child(even) { background: #2c2e2f; }"
