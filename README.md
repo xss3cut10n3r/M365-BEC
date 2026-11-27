@@ -2,7 +2,8 @@
 
 An offline tool for investigating Microsoft 365 business email compromise on Windows and Linux. Review Purview audit logs, Entra sign-in and directory audit logs, and Exchange message traces on one UTC timeline.
 
-[Download M365-BEC.exe for Windows x64](https://github.com/xss3cut10n3r/M365-BEC/releases/latest/download/M365-BEC.exe)
+- [Download for Windows x64](https://github.com/xss3cut10n3r/M365-BEC/releases/latest/download/M365-BEC-windows-x64.zip). Extract the zip and run `M365-BEC.exe`.
+- [Download for Linux x64](https://github.com/xss3cut10n3r/M365-BEC/releases/latest/download/M365-BEC-linux-x64.tar.gz). Extract it and run `./m365-bec`. Needs Ubuntu 24.04 or a distribution of the same age or newer.
 
 ## Investigate a case
 
