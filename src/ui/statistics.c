@@ -16,7 +16,8 @@ typedef struct {
     GCancellable *cancel;
     GPtrArray *rows;
     int step, width;
-    gboolean closed;
+    gboolean closed, gone;
+    int pending;
     double hover_x;
 } Stats;
 
@@ -35,6 +36,23 @@ static const int STEPS[] = {60, 900, 3600, 86400};
 
 static int stop_requested(void *cancel) {
     return g_cancellable_is_cancelled(cancel);
+}
+
+// Frees a closed, idle window.
+static void release(Stats *stats) {
+    if (!stats->gone || stats->pending)
+        return;
+    if (stats->rows)
+        g_ptr_array_free(stats->rows, TRUE);
+    g_clear_object(&stats->cancel);
+    g_clear_object(&stats->sorted);
+    g_clear_object(&stats->filtered);
+    g_clear_object(&stats->store);
+    g_free(stats->path);
+    g_free(stats->original_filter);
+    g_free(stats->base);
+    g_free(stats->key);
+    g_free(stats);
 }
 
 static gboolean job_done(gpointer data) {
@@ -118,6 +136,8 @@ static gboolean job_done(gpointer data) {
     g_free(job->filter);
     g_free(job->error);
     g_free(job);
+    stats->pending--;
+    release(stats);
     return G_SOURCE_REMOVE;
 }
 
@@ -180,6 +200,7 @@ static void refresh(Stats *stats) {
     job->filter = g_strdup(stats->base);
     job->log = stats->log;
     job->step = step;
+    stats->pending++;
     g_thread_unref(g_thread_new("statistics", job_run, job));
 }
 
@@ -422,8 +443,12 @@ static void table_context(GtkGestureClick *gesture, int presses, double x, doubl
 static void save_chosen(GObject *source, GAsyncResult *result, gpointer user) {
     Stats *stats = user;
     GFile *file = gtk_file_dialog_save_finish(GTK_FILE_DIALOG(source), result, NULL);
-    if (!file || stats->closed || !stats->rows || !stats->key)
+    stats->pending--;
+    if (!file || stats->closed || !stats->rows || !stats->key) {
+        g_clear_object(&file);
+        release(stats);
         return;
+    }
     char *path = g_file_get_path(file);
     g_object_unref(file);
     GError *error = NULL;
@@ -481,6 +506,7 @@ static void save_clicked(GtkButton *button, gpointer user) {
     char *name = g_strconcat(current_key(stats), ".csv", NULL);
     gtk_file_dialog_set_initial_name(dialog, name);
     g_free(name);
+    stats->pending++;
     gtk_file_dialog_save(dialog, GTK_WINDOW(stats->window), NULL, save_chosen, stats);
     g_object_unref(dialog);
 }
@@ -498,6 +524,22 @@ static gboolean window_closed(GtkWindow *window, gpointer user) {
         g_cancellable_cancel(stats->cancel);
     g_ptr_array_remove(stats->app->stats, stats->window);
     return FALSE;
+}
+
+static void window_gone(gpointer user, GObject *window) {
+    (void)window;
+    Stats *stats = user;
+    stats->gone = TRUE;
+    release(stats);
+}
+
+// Case edits outdate open reports.
+void statistics_refresh_all(App *app) {
+    for (guint i = 0; i < app->stats->len; i++) {
+        Stats *stats = g_object_get_data(G_OBJECT(app->stats->pdata[i]), "stats");
+        if (stats)
+            refresh(stats);
+    }
 }
 
 void statistics_close_all(App *app) {
@@ -608,6 +650,7 @@ void statistics_open(App *app, const char *key) {
         g_object_unref(action);
     }
     gtk_widget_insert_action_group(stats->window, "stats", G_ACTION_GROUP(actions));
+    g_object_unref(actions);
     GtkGesture *context = gtk_gesture_click_new();
     gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(context), GDK_BUTTON_SECONDARY);
     g_signal_connect(context, "pressed", G_CALLBACK(table_context), stats);
@@ -619,6 +662,8 @@ void statistics_open(App *app, const char *key) {
     g_signal_connect(stats->scope, "notify::selected", G_CALLBACK(control_changed), stats);
     g_signal_connect(stats->limit, "toggled", G_CALLBACK(limit_toggled), stats);
     g_signal_connect(stats->window, "close-request", G_CALLBACK(window_closed), stats);
+    g_object_set_data(G_OBJECT(stats->window), "stats", stats);
+    g_object_weak_ref(G_OBJECT(stats->window), window_gone, stats);
     g_ptr_array_add(app->stats, stats->window);
     gtk_window_present(GTK_WINDOW(stats->window));
     refresh(stats);

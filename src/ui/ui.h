@@ -131,6 +131,7 @@ void inspector_set_vertical(Inspector *inspector, gboolean vertical);
 /* statistics.c */
 void statistics_open(App *app, const char *key);
 void statistics_close_all(App *app);
+void statistics_refresh_all(App *app);
 
 /* dialogs.c */
 void dialog_help(App *app);
