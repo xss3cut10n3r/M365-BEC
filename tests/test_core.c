@@ -536,6 +536,55 @@ static void test_permissions(void) {
 #endif
 }
 
+// Settled cases open in place.
+static void test_read_only(void) {
+#ifdef G_OS_UNIX
+    if (geteuid() == 0)
+        return;
+    char *folder = file("locked"), *path = g_build_filename(folder, "ro.bec", NULL);
+    char *source = put("ro.csv", "Operation\nOne\n");
+    g_mkdir(folder, 0700);
+    GError *error = NULL;
+    sqlite3 *db = case_connect(path, NULL);
+    CHECK(db && import_file(db, source, NULL, NULL, NULL) == IMPORT_DONE);
+    sqlite3_close(db);
+    CHECK(g_chmod(path, 0444) == 0 && g_chmod(folder, 0555) == 0);
+    db = case_connect(path, &error);
+    CHECK(db != NULL);
+    if (db) {
+        CHECK(count(db, "operation = One") == 1);
+        CHECK(mark_matches(db, 0, "operation = One", "Bad", 0, NULL) == -1);
+        GPtrArray *rows = stats_calculate(db, "operations", 0, "", 3600, NULL);
+        CHECK(rows && rows->len == 1);
+        if (rows)
+            g_ptr_array_free(rows, TRUE);
+        sqlite3_close(db);
+    }
+    g_clear_error(&error);
+    db = case_read(path, NULL);
+    CHECK(db && count(db, "") == 1);
+    sqlite3_close(db);
+    GDir *listing = g_dir_open(folder, 0, NULL);
+    g_dir_read_name(listing);
+    CHECK(g_dir_read_name(listing) == NULL);
+    g_dir_close(listing);
+    // Live WAL data is never skipped.
+    CHECK(g_chmod(folder, 0755) == 0 && g_chmod(path, 0644) == 0);
+    sqlite3 *writer = case_connect(path, NULL);
+    g_free(put("ro-more.csv", "Operation\nTwo\n"));
+    CHECK(writer && load(writer, "ro-more.csv", NULL) == IMPORT_DONE);
+    CHECK(g_chmod(path, 0444) == 0 && g_chmod(folder, 0555) == 0);
+    db = case_connect(path, NULL);
+    CHECK(!db || count(db, "") == 2);
+    sqlite3_close(db);
+    CHECK(g_chmod(folder, 0755) == 0 && g_chmod(path, 0644) == 0);
+    sqlite3_close(writer);
+    g_free(source);
+    g_free(folder);
+    g_free(path);
+#endif
+}
+
 int main(void) {
     root = g_dir_make_tmp("bec-test-XXXXXX", NULL);
     test_text();
@@ -548,6 +597,7 @@ int main(void) {
     test_mark_scope();
     test_first_imports();
     test_permissions();
+    test_read_only();
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

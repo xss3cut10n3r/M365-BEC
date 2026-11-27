@@ -124,6 +124,67 @@ static gboolean protect_evidence(sqlite3 *db, GError **error) {
     return transact(db, steps, G_N_ELEMENTS(steps), error);
 }
 
+// Review tables may be missing.
+static void prepare_reader(sqlite3 *db) {
+    sqlite3_busy_timeout(db, 30000);
+    if (sql_int(db, "SELECT count(*) FROM sqlite_master WHERE name='verdict_rules'", NULL) == 0) {
+        sql_run(db, "CREATE TEMP TABLE " RULE_TABLE, NULL);
+        sql_run(db, "CREATE TEMP TABLE timeline_ids(event INTEGER PRIMARY KEY, number INTEGER UNIQUE)", NULL);
+        sql_run(db, "INSERT INTO timeline_ids " TIMELINE_ROWS, NULL);
+    }
+    register_functions(db);
+}
+
+static gboolean pending_wal(const char *path) {
+    char *wal = g_strconcat(path, "-wal", NULL);
+    GStatBuf info;
+    gboolean pending = g_stat(wal, &info) == 0 && info.st_size > 0;
+    g_free(wal);
+    return pending;
+}
+
+// Reads a settled case in place.
+static sqlite3 *open_immutable(const char *path, GError **error) {
+    if (pending_wal(path)) {
+        bec_fail(error, "This case has changes waiting in its -wal file. Open it from a writable folder first.");
+        return NULL;
+    }
+    char *absolute = g_canonicalize_filename(path, NULL);
+#ifdef G_OS_WIN32
+    for (char *p = absolute; *p; p++)
+        if (*p == '\\')
+            *p = '/';
+#endif
+    char *escaped = g_uri_escape_string(absolute, "/:", TRUE);
+    char *uri = g_strdup_printf("file://%s%s?immutable=1", escaped[0] == '/' ? "" : "/", escaped);
+    sqlite3 *db = NULL;
+    gboolean ok = sqlite3_open_v2(uri, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_URI, NULL) == SQLITE_OK;
+    g_free(uri);
+    g_free(escaped);
+    g_free(absolute);
+    GError *problem = NULL;
+    if (ok && sql_int(db, "PRAGMA application_id", &problem) != APP_ID && !problem)
+        bec_fail(&problem, "Choose a valid M365 BEC case file");
+    if (ok && !problem && sql_int(db, "PRAGMA user_version", &problem) != 2 && !problem)
+        bec_fail(&problem, "Unsupported case format");
+    if (!ok || problem) {
+        if (problem)
+            g_propagate_error(error, problem);
+        else
+            bec_fail(error, "%s", db ? sqlite3_errmsg(db) : "Case file could not be opened");
+        sqlite3_close(db);
+        return NULL;
+    }
+    prepare_reader(db);
+    return db;
+}
+
+// Read-only folders block WAL files.
+static gboolean blocked_by_folder(sqlite3 *db) {
+    int code = sqlite3_errcode(db);
+    return code == SQLITE_READONLY || code == SQLITE_CANTOPEN;
+}
+
 sqlite3 *case_connect(const char *path, GError **error) {
     sqlite3 *db = NULL;
 #ifdef G_OS_UNIX
@@ -140,6 +201,12 @@ sqlite3 *case_connect(const char *path, GError **error) {
     sqlite3_busy_timeout(db, 30000);
     GError *problem = NULL;
     gint64 identity = sql_int(db, "PRAGMA application_id", &problem);
+    if (problem && blocked_by_folder(db)) {
+        // Inspect settled cases in place.
+        g_clear_error(&problem);
+        sqlite3_close(db);
+        return open_immutable(path, error);
+    }
     if (!problem && identity != APP_ID) {
         if (sql_run(db, "BEGIN IMMEDIATE", &problem)) {
             // Another process may have initialized.
@@ -191,13 +258,11 @@ sqlite3 *case_read(const char *path, GError **error) {
         sqlite3_close(db);
         return NULL;
     }
-    sqlite3_busy_timeout(db, 30000);
-    if (sql_int(db, "SELECT count(*) FROM sqlite_master WHERE name='verdict_rules'", NULL) == 0) {
-        sql_run(db, "CREATE TEMP TABLE " RULE_TABLE, NULL);
-        sql_run(db, "CREATE TEMP TABLE timeline_ids(event INTEGER PRIMARY KEY, number INTEGER UNIQUE)", NULL);
-        sql_run(db, "INSERT INTO timeline_ids " TIMELINE_ROWS, NULL);
+    if (sqlite3_exec(db, "SELECT count(*) FROM sqlite_master", NULL, NULL, NULL) != SQLITE_OK && blocked_by_folder(db)) {
+        sqlite3_close(db);
+        return open_immutable(path, error);
     }
-    register_functions(db);
+    prepare_reader(db);
     return db;
 }
 
