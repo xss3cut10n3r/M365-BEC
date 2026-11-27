@@ -58,6 +58,6 @@ Packages are written to `dist/`.
 
 ## MCP server
 
-**[M365-BEC-MCP](https://github.com/xss3cut10n3r/M365-BEC-MCP)** lets Claude, or any MCP client, search, mark, and export the same `.bec` cases.
+**[M365-BEC-MCP](https://github.com/xss3cut10n3r/M365-BEC-MCP)** lets any MCP client, search, mark, and export the same `.bec` cases.
 
 [GPL-3.0](LICENSE)
