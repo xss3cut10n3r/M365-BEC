@@ -640,7 +640,7 @@ static void write_cells(lxw_worksheet *sheet, int row, const char *first, const 
         worksheet_write_string(sheet, row, 1, second, NULL);
 }
 
-// Gaps, escapes and relocated sheets.
+// Gaps and escaped text.
 static void test_workbooks(void) {
     sqlite3 *db = open_case("books.bec");
     char *path = file("gaps.xlsx");
@@ -660,6 +660,30 @@ static void test_workbooks(void) {
     CHECK(count(db, "operation = Send AND row = 3 AND actor = a") == 1 && count(db, "operation = Delete AND row = 6") == 1);
     CHECK(count(db, "operation = Short AND row = 7 AND issue contains \"Expected 2 fields\"") == 1);
     CHECK(sql_int(db, "SELECT issues FROM logs WHERE sheet='Evidence'", NULL) == 1);
+    g_free(path);
+    // Only real escapes are decoded.
+    path = file("escapes.xlsx");
+    book = workbook_new(path);
+    sheet = workbook_add_worksheet(book, "Shared");
+    write_cells(sheet, 0, "Operation", "Subject");
+    write_cells(sheet, 1, "Send", "one");
+    write_cells(sheet, 2, "Send", "two");
+    write_cells(workbook_add_worksheet(book, "Inline"), 0, "x", NULL);
+    CHECK(workbook_close(book) == LXW_NO_ERROR);
+    zip_swap(path, "xl/sharedStrings.xml", NULL,
+             "<sst xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><si><t>Operation</t></si>"
+             "<si><t>Subject</t></si><si><t>Send</t></si><si><t>box005F_item</t></si>"
+             "<si><t>a_x005F_x000D_b_x000D_c_x00ZZ_</t></si></sst>");
+    zip_swap(path, "xl/worksheets/sheet2.xml", NULL,
+             "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><sheetData>"
+             "<row r=\"1\"><c r=\"A1\" t=\"inlineStr\"><is><t>Operation</t></is></c>"
+             "<c r=\"B1\" t=\"inlineStr\"><is><t>Subject</t></is></c></row>"
+             "<row r=\"2\"><c r=\"A2\" t=\"inlineStr\"><is><t>Read</t></is></c>"
+             "<c r=\"B2\" t=\"inlineStr\"><is><t>inx005F_line_x005F_</t></is></c></row></sheetData></worksheet>");
+    CHECK(load(db, "escapes.xlsx", NULL) == IMPORT_DONE);
+    CHECK(count(db, "sheet = Shared AND subject = \"box005F_item\"") == 1);
+    CHECK(count(db, "sheet = Shared AND subject = \"a_x000D_b\\rc_x00ZZ_\"") == 1);
+    CHECK(count(db, "sheet = Inline AND subject = \"inx005F_line_\"") == 1);
     g_free(path);
     sqlite3_close(db);
 }

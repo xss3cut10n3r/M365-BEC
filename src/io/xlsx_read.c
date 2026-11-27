@@ -151,9 +151,25 @@ static void strings_start(void *user, const XML_Char *name, const XML_Char **att
         book->collect = TRUE;
 }
 
+// Decodes _xHHHH_ escapes only.
 static char *unescape_cell(GString *text) {
-    g_string_replace(text, "x005F_", "", 0);
-    return g_strndup(text->str, text->len);
+    GString *out = g_string_sized_new(text->len);
+    const char *p = text->str, *end = p + text->len;
+    while (p < end) {
+        if (end - p >= 7 && p[0] == '_' && p[1] == 'x' && p[6] == '_' && g_ascii_isxdigit(p[2]) &&
+            g_ascii_isxdigit(p[3]) && g_ascii_isxdigit(p[4]) && g_ascii_isxdigit(p[5])) {
+            gunichar code = 0;
+            for (int i = 2; i < 6; i++)
+                code = code << 4 | (gunichar)g_ascii_xdigit_value(p[i]);
+            if (code && (code < 0xd800 || code > 0xdfff)) {
+                g_string_append_unichar(out, code);
+                p += 7;
+                continue;
+            }
+        }
+        g_string_append_c(out, *p++);
+    }
+    return g_string_free(out, FALSE);
 }
 
 static void strings_end(void *user, const XML_Char *name) {
