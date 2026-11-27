@@ -856,6 +856,16 @@ static void test_purview(void) {
     CHECK(count(db, "operation = SoftDelete AND messageid = \"<msg-two@example.org>\" AND subject = \"Status update\"") == 1);
     CHECK(count(db, "operation = SoftDelete AND subject = Other AND mailitem = item-three AND folder = \"/Drafts\"") == 1);
     CHECK(count(db, "subject = \"Status update\"") == 1 && count(db, "mailitem = \"<msg-two@example.org>\"") == 1);
+    // Recipients are mailboxes too.
+    g_free(put("sent.json", "{\"CreationTime\":\"2026-03-01T02:00:00Z\",\"Operation\":\"Send\",\"RecordType\":2,"
+                            "\"UserId\":\"a@example.org\",\"Item\":{\"Recipients\":[{\"Address\":\"team@example.org\","
+                            "\"Name\":\"Team\"},\"plain@example.org\"]}}"));
+    g_free(put("sent.csv", "CreationDate,Operation,AuditData\n2026-03-01T02:00:00Z,Send,\"{\"\"Operation\"\":\"\"Send\"\","
+                           "\"\"UserId\"\":\"\"b@example.org\"\",\"\"Item\"\":{\"\"Recipients\"\":[{\"\"Address\"\":\"\"csv-team@example.org\"\"}]}}\"\n"));
+    CHECK(load(db, "sent.json", NULL) == IMPORT_DONE && load(db, "sent.csv", NULL) == IMPORT_DONE);
+    CHECK(count(db, "recipient = \"team@example.org\" AND mailbox = \"team@example.org\" AND actor = \"a@example.org\"") == 1);
+    CHECK(count(db, "mailbox = \"plain@example.org\"") == 1 && count(db, "mailbox = \"csv-team@example.org\"") == 1);
+    CHECK(count(db, "actor = \"team@example.org\"") == 0 && report_total(db, "mailboxes", "team@example.org") == 1);
     sqlite3_close(db);
 }
 

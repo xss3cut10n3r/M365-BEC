@@ -344,6 +344,17 @@ gboolean importer_row(Importer *im, GPtrArray *values, const char *raw, const JV
     GPtrArray *users = g_ptr_array_new_with_free_func(g_free);
     g_ptr_array_add(users, g_strdup(actor));
     g_ptr_array_add(users, j_text(j_get(audit, "MailboxOwnerUPN"), FALSE));
+    // Sent mail reaches recipient mailboxes.
+    const JV *sent = j_get(j_get(audit, "Item"), "Recipients");
+    for (guint i = 0; sent && sent->t == J_ARR && i < sent->n; i++) {
+        const JV *entry = sent->u.a[i];
+        static const char *const keys[] = {"Address", "EmailAddress", "SmtpAddress"};
+        for (guint k = 0; entry->t == J_OBJ && k < G_N_ELEMENTS(keys); k++)
+            if (j_get(entry, keys[k]) && j_get(entry, keys[k])->t == J_STR)
+                g_ptr_array_add(users, g_strdup(j_get(entry, keys[k])->u.s));
+        if (entry->t == J_STR)
+            g_ptr_array_add(users, g_strdup(entry->u.s));
+    }
     g_ptr_array_add(users, g_strdup(GET(im, values, "actoruserprincipalname")));
     g_ptr_array_add(users, g_strdup(GET(im, values, "username")));
     for (guint i = 0; i < im->targets->len; i++) {
