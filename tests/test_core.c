@@ -743,6 +743,17 @@ static void test_handoff(void) {
     sqlite3_close(db);
 }
 
+// Provider fields feed shared pivots.
+static void test_pivots(void) {
+    sqlite3 *db = open_case("pivots.bec");
+    g_free(put("trace.csv", "Received,SenderAddress,RecipientAddress,FromIP,ToIP,Status\n"
+                            "2026-06-01T12:00:00Z,s@example.org,r@example.org,192.0.2.8,192.0.2.9,Delivered\n"));
+    CHECK(load(db, "trace.csv", NULL) == IMPORT_DONE);
+    CHECK(count(db, "source = \"Exchange trace\" AND ip = 192.0.2.8") == 1 && count(db, "ip = 192.0.2.9") == 1);
+    CHECK(count(db, "field \"/FromIP\" = 192.0.2.8 AND field \"/ToIP\" = 192.0.2.9") == 1);
+    sqlite3_close(db);
+}
+
 int main(void) {
     root = g_dir_make_tmp("bec-test-XXXXXX", NULL);
     test_text();
@@ -759,6 +770,7 @@ int main(void) {
     test_copy();
     test_workbooks();
     test_handoff();
+    test_pivots();
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

@@ -266,7 +266,8 @@ gboolean importer_row(Importer *im, GPtrArray *values, const char *raw, const JV
         g_free(text);
     }
     static const char *const ip_columns[] = {"ip address", "ipaddress", "ip address (seen by resource)",
-                                             "global secure access ip address", "original_client_ip", "client_ip", "ip"};
+                                             "global secure access ip address", "original_client_ip", "client_ip", "ip",
+                                             "fromip", "toip"};
     for (guint i = 0; i < G_N_ELEMENTS(ip_columns); i++) {
         const char *cell = GET(im, values, ip_columns[i]);
         // Timeline cells list several addresses.
