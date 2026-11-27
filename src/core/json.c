@@ -130,8 +130,18 @@ static JV *convert(JDoc *doc, yyjson_val *value, int depth, int flags, GError **
 
 static JV *parse_into(JDoc *doc, const char *text, gsize length, int flags, GError **error) {
     yyjson_read_err problem;
-    yyjson_doc *source = yyjson_read_opts((char *)text, length,
-                                          YYJSON_READ_NUMBER_AS_RAW | YYJSON_READ_ALLOW_INF_AND_NAN, NULL, &problem);
+    // Evidence imports need standard numbers.
+    gboolean strict = (flags & J_STRICT_KEYS) != 0;
+    yyjson_read_flag lenient = YYJSON_READ_NUMBER_AS_RAW | YYJSON_READ_ALLOW_INF_AND_NAN;
+    yyjson_doc *source = yyjson_read_opts((char *)text, length, strict ? YYJSON_READ_NUMBER_AS_RAW : lenient, NULL, &problem);
+    if (!source && strict) {
+        yyjson_doc *loose = yyjson_read_opts((char *)text, length, lenient, NULL, NULL);
+        if (loose) {
+            yyjson_doc_free(loose);
+            bec_fail(error, "JSON holds NaN or Infinity near byte %" G_GSIZE_FORMAT ", which are not valid JSON numbers", problem.pos + 1);
+            return NULL;
+        }
+    }
     if (!source) {
         bec_fail(error, "Malformed JSON near byte %" G_GSIZE_FORMAT ": %s", problem.pos + 1, problem.msg);
         return NULL;
@@ -262,6 +272,11 @@ static gboolean integer_literal(const char *s) {
     return *s == 0;
 }
 
+// Spots NaN and Infinity tokens.
+static gboolean nonfinite(const char *raw) {
+    return g_ascii_isalpha(raw[raw[0] == '-']);
+}
+
 // Shortest round-trip float text.
 char *py_float_repr(double value) {
     if (isnan(value))
@@ -315,8 +330,8 @@ char *j_number_text(const JV *number) {
     const char *raw = number->u.s;
     if (integer_literal(raw))
         return g_strdup(!strcmp(raw, "-0") ? "0" : raw);
-    if (g_ascii_isalpha(raw[0]) || g_ascii_isalpha(raw[1])) {
-        if (g_ascii_tolower(raw[0]) == 'n')
+    if (nonfinite(raw)) {
+        if (g_ascii_tolower(raw[raw[0] == '-']) == 'n')
             return g_strdup("NaN");
         return g_strdup(raw[0] == '-' ? "-Infinity" : "Infinity");
     }
@@ -364,7 +379,12 @@ static void dump(GString *out, const JV *value, int flags, int depth) {
         g_string_append(out, "false");
         break;
     case J_NUM:
-        if (flags & J_RAW_NUMBERS) {
+        if (nonfinite(value->u.s)) {
+            // Older cases may hold NaN.
+            char *text = j_number_text(value);
+            j_quote(out, text, -1);
+            g_free(text);
+        } else if (flags & J_RAW_NUMBERS) {
             g_string_append(out, value->u.s);
         } else {
             char *text = j_number_text(value);

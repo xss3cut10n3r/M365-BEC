@@ -888,6 +888,30 @@ static void test_json_values(void) {
     CHECK(strstr(text, "\"Note\":\"before\\u0000after\""));
     g_free(text);
     g_free(path);
+    // Only standard numbers import.
+    static const char *const tokens[] = {"NaN", "Infinity", "-Infinity"};
+    for (guint i = 0; i < G_N_ELEMENTS(tokens); i++) {
+        char *body = g_strdup_printf("[{\"Operation\":\"Send\",\"Duration\":%s}]", tokens[i]), *message = NULL;
+        g_free(put("numbers.json", body));
+        CHECK(load(db, "numbers.json", &message) == IMPORT_FAILED && strstr(message, "NaN or Infinity"));
+        g_free(message);
+        g_free(body);
+    }
+    g_free(put("finite.json", "[{\"Operation\":\"Timed\",\"Duration\":1.50,\"Big\":1e400}]"));
+    CHECK(load(db, "finite.json", NULL) == IMPORT_DONE && save(db, "finite-out.json", "operation = Timed"));
+    path = file("finite-out.json");
+    text = slurp(path);
+    CHECK(strstr(text, "\"Duration\":1.50,\"Big\":1e400") && j_parse(text, -1, J_STRICT_KEYS, NULL));
+    g_free(text);
+    g_free(path);
+    // Stored NaN exports as text.
+    JDoc *legacy = j_parse("[NaN,-Infinity,2.5]", -1, 0, NULL);
+    GString *dumped = g_string_new(NULL);
+    j_dump(dumped, legacy->root, J_RAW_NUMBERS);
+    CHECK(!strcmp(dumped->str, "[\"NaN\",\"-Infinity\",2.5]"));
+    CHECK(count(db, "field \"/Duration\" = 1.5") == 1);
+    g_string_free(dumped, TRUE);
+    j_free(legacy);
     sqlite3_close(db);
 }
 
