@@ -72,6 +72,13 @@ int cli_run(const Options *options) {
         fprintf(stderr, "Use --case CASE.bec with --export, --mark or --no-gui.\n");
         return 2;
     }
+    // Exports never replace inputs.
+    for (char **file = options->files; options->export_path && file && *file; file++) {
+        if (same_file(options->export_path, *file)) {
+            fprintf(stderr, "Export failed: %s is an input file. Choose another destination.\n", options->export_path);
+            return 2;
+        }
+    }
     GError *error = NULL;
     sqlite3 *db = case_connect(options->case_path, &error);
     if (!db) {
