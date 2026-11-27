@@ -554,6 +554,7 @@ static void range_accept(GtkWidget *widget, gpointer data) {
         } else {
             gtk_window_close(GTK_WINDOW(range->window));
             app_saved(app, "time range verdict");
+            statistics_refresh_all(app);
             app_refresh(app);
         }
         g_ptr_array_free(pairs, TRUE);

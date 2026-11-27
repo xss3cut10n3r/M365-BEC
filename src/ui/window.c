@@ -847,6 +847,7 @@ static void import_finished(App *app, FileJob *job) {
     }
     if (job->imported) {
         char *what = g_strdup_printf("%u evidence file(s) added", job->imported);
+        statistics_refresh_all(app);
         app_saved(app, what);
         g_free(what);
     }
@@ -1153,6 +1154,7 @@ static void verdict_applied(App *app, GError *error, const char *what) {
         return;
     }
     app_saved(app, what);
+    statistics_refresh_all(app);
     app_refresh(app);
 }
 
@@ -1383,6 +1385,9 @@ static void activate(GSimpleAction *action, GVariant *parameter, gpointer user) 
         if (app->has_active) {
             remember_view(app);
             verdict_applied(app, error, "undo");
+        } else {
+            g_clear_error(&error);
+            statistics_refresh_all(app);
         }
     } else if (!strcmp(name, "home")) {
         go_home(app);
