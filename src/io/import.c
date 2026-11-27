@@ -97,6 +97,24 @@ static gboolean target_principal(const char *clean) {
     return !strcmp(p, "userprincipalname");
 }
 
+static char *nested_text(const JV *record, const char *first, const char *second, const char *third) {
+    const JV *value = j_get(record, first);
+    if (second)
+        value = j_get(value, second);
+    if (third)
+        value = j_get(value, third);
+    return value && !j_is_container(value) ? j_text(value, TRUE) : g_strdup("");
+}
+
+static void prefer(char **slot, char *candidate) {
+    if (**slot) {
+        g_free(candidate);
+        return;
+    }
+    g_free(*slot);
+    *slot = candidate;
+}
+
 gboolean importer_begin(Importer *im, const char *sheet, GError **error) {
     (void)error;
     im->active = FALSE;
@@ -180,24 +198,6 @@ static void add_address(GPtrArray *ips, const char *value) {
         g_free(ip);
 }
 
-static char *nested_text(const JV *record, const char *first, const char *second, const char *third) {
-    const JV *value = j_get(record, first);
-    if (second)
-        value = j_get(value, second);
-    if (third)
-        value = j_get(value, third);
-    return value && !j_is_container(value) ? j_text(value, TRUE) : g_strdup("");
-}
-
-static void prefer(char **slot, char *candidate) {
-    if (**slot) {
-        g_free(candidate);
-        return;
-    }
-    g_free(*slot);
-    *slot = candidate;
-}
-
 gboolean importer_row(Importer *im, GPtrArray *values, const char *raw, const JV *record, GError **error) {
     if (!im->log && !im->active) {
         // The first row names columns.
@@ -240,6 +240,16 @@ gboolean importer_row(Importer *im, GPtrArray *values, const char *raw, const JV
     char *op = j_text(j_get(audit, "Operation"), FALSE);
     prefer(&op, g_strdup(GET(im, values, "operation", "activity", "authentication method", "event_id", "event")));
     char *result = j_text(j_get(audit, "ResultStatus"), FALSE);
+    const JV *status = im->json ? j_get(record, "status") : NULL;
+    if (status && status->t == J_OBJ) {
+        // Graph nests the outcome.
+        char *code = nested_text(record, "status", "errorCode", NULL);
+        char *reason = nested_text(record, "status", "failureReason", NULL);
+        if (*code)
+            prefer(&result, g_strdup(!strcmp(code, "0") ? "Success" : *reason ? reason : "Failure"));
+        g_free(code);
+        g_free(reason);
+    }
     prefer(&result, g_strdup(GET(im, values, "status", "result", "succeeded", "recipient_status")));
     char *request = NULL;
     {
@@ -276,15 +286,6 @@ gboolean importer_row(Importer *im, GPtrArray *values, const char *raw, const JV
                                     "eventdatetime")));
         prefer(&op, g_strdup(GET(im, values, "activitydisplayname", "operationname")));
         prefer(&result, g_strdup(GET(im, values, "resultstatus")));
-        const JV *status = j_get(record, "status");
-        if (!*result && status && status->t == J_OBJ) {
-            char *code = nested_text(record, "status", "errorCode", NULL);
-            char *reason = nested_text(record, "status", "failureReason", NULL);
-            if (*code)
-                prefer(&result, g_strdup(!strcmp(code, "0") ? "Success" : *reason ? reason : "Failure"));
-            g_free(code);
-            g_free(reason);
-        }
         add_address(ips, GET(im, values, "clientip", "clientipaddress", "calleripaddress"));
         if (!*request && g_str_has_suffix(im->kind, " sign-ins")) {
             g_free(request);
