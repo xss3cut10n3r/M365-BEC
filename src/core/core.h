@@ -83,16 +83,20 @@ Columns *columns_new(const char *headers_json);
 void columns_free(Columns *columns);
 GArray *columns_get(const Columns *columns, const char *name);
 gboolean columns_support(const Columns *columns, const char *field);
-typedef struct {
+typedef struct EventFields EventFields;
+struct EventFields {
     Columns *columns;
     gboolean own_columns;
     JDoc *row;
     JDoc *audit_doc;
     const JV *audit;
-} EventFields;
+    EventFields *inner;
+    gboolean unwrapped;
+};
 EventFields *event_fields_new(const char *headers, const char *raw);
 void event_fields_free(EventFields *fields);
 GPtrArray *event_values(EventFields *fields, const char *field);
+GPtrArray *record_values(const JV *record, const char *field);
 GPtrArray *pointer_values(Columns *columns, const char *raw, const char *pointer, gboolean presence);
 char *escape_pointer(const char *key);
 void register_functions(sqlite3 *db);

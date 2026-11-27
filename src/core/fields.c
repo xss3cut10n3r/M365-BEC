@@ -92,8 +92,13 @@ static gboolean flat_audit(const Columns *columns) {
     return !has(columns, "auditdata") && has(columns, "creationtime") && has(columns, "operation");
 }
 
+// Timeline exports wrap original records.
+static gboolean wrapped(const Columns *columns) {
+    return has(columns, "record") && has(columns, "source row") && has(columns, "time (utc)") && has(columns, "verdict");
+}
+
 gboolean columns_support(const Columns *columns, const char *field) {
-    if (has(columns, "auditdata") || flat_audit(columns))
+    if (has(columns, "auditdata") || flat_audit(columns) || wrapped(columns))
         return TRUE;
     const Slot *slot = slot_find(field);
     for (int i = 0; slot && i < 5 && slot->outer[i]; i++)
@@ -144,6 +149,7 @@ void event_fields_free(EventFields *fields) {
         return;
     if (fields->own_columns)
         columns_free(fields->columns);
+    event_fields_free(fields->inner);
     j_free(fields->row);
     j_free(fields->audit_doc);
     g_free(fields);
@@ -265,7 +271,51 @@ static gboolean target_column(const char *clean) {
     return !strcmp(p, "userprincipalname") || !strcmp(p, "displayname") || !strcmp(p, "objectid");
 }
 
+// Presents an object as a row.
+static EventFields *object_fields(const JV *object) {
+    GString *headers = g_string_new("["), *raw = g_string_new("[");
+    for (guint i = 0; i < object->n; i++) {
+        if (i) {
+            g_string_append_c(headers, ',');
+            g_string_append_c(raw, ',');
+        }
+        j_quote(headers, object->u.m[i].key, -1);
+        j_dump(raw, object->u.m[i].v, J_RAW_NUMBERS);
+    }
+    g_string_append_c(headers, ']');
+    g_string_append_c(raw, ']');
+    EventFields *fields = event_fields_new(headers->str, raw->str);
+    g_string_free(headers, TRUE);
+    g_string_free(raw, TRUE);
+    return fields;
+}
+
+GPtrArray *record_values(const JV *record, const char *field) {
+    if (!record || record->t != J_OBJ)
+        return g_ptr_array_new_with_free_func(g_free);
+    EventFields *fields = object_fields(record);
+    GPtrArray *found = event_values(fields, field);
+    event_fields_free(fields);
+    return found;
+}
+
+static EventFields *unwrap(EventFields *fields) {
+    if (fields->unwrapped || !wrapped(fields->columns))
+        return fields->inner;
+    fields->unwrapped = TRUE;
+    GPtrArray *cells = g_ptr_array_new();
+    outer(fields, "Record", cells);
+    if (cells->len && ((const JV *)cells->pdata[0])->t == J_OBJ)
+        fields->inner = object_fields(cells->pdata[0]);
+    g_ptr_array_free(cells, TRUE);
+    return fields->inner;
+}
+
 GPtrArray *event_values(EventFields *fields, const char *field) {
+    // Exported records answer for themselves.
+    EventFields *original = unwrap(fields);
+    if (original)
+        return event_values(original, field);
     GPtrArray *texts = g_ptr_array_new_with_free_func(g_free);
     const Slot *slot = slot_find(field);
     if (!slot)
@@ -695,7 +745,8 @@ static gboolean folded_hit(GPtrArray *found, const char *value, gboolean contain
 
 // Plain logs skip tree parsing.
 static gboolean plain_slot_values(Columns *columns, const char *field, const char *raw, GPtrArray *out) {
-    if (has(columns, "auditdata") || flat_audit(columns) || !strcmp(field, "recipient") || !strcmp(field, "delivery") ||
+    if (has(columns, "auditdata") || flat_audit(columns) || wrapped(columns) || !strcmp(field, "recipient") ||
+        !strcmp(field, "delivery") ||
         !strcmp(field, "target") || !strcmp(field, "authstep") || has(columns, "devicedetail") ||
         has(columns, "authenticationdetails"))
         return FALSE;

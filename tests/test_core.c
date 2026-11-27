@@ -915,6 +915,28 @@ static void test_json_values(void) {
     sqlite3_close(db);
 }
 
+// JSON handoffs keep named fields.
+static void test_json_handoff(void) {
+    sqlite3 *db = open_case("purview.bec"), *fresh = open_case("purview-again.bec");
+    CHECK(mark_matches(db, 0, "file = sent.json", "Bad", 0, NULL) == 1);
+    CHECK(save(db, "purview-out.json", ""));
+    CHECK(load(fresh, "purview-out.json", NULL) == IMPORT_DONE);
+    static const char *const filters[] = {
+        "recipient = \"team@example.org\"", "mailbox = \"team@example.org\"", "subject = \"Status update\"",
+        "mailitem = stable-control", "mailitem = stable-one", "folder = \"/Inbox\"", "folder = \"/Archive\"",
+        "messageid = \"<msg-two@example.org>\"", "mailbox = \"csv-team@example.org\"", "recipient = \"csv-team@example.org\"",
+        "verdict = Bad", "subject = Example", "source = \"Purview audit\"", "mailbox = \"a@example.org\""};
+    for (guint i = 0; i < G_N_ELEMENTS(filters); i++) {
+        if (count(db, filters[i]) != count(fresh, filters[i]) || !count(db, filters[i]))
+            printf("handoff %s\n", filters[i]);
+        CHECK(count(db, filters[i]) > 0 && count(db, filters[i]) == count(fresh, filters[i]));
+    }
+    CHECK(report_total(fresh, "items", NULL) == report_total(db, "items", NULL));
+    CHECK(report_total(fresh, "conversations", NULL) == report_total(db, "conversations", NULL));
+    sqlite3_close(fresh);
+    sqlite3_close(db);
+}
+
 int main(void) {
     root = g_dir_make_tmp("bec-test-XXXXXX", NULL);
     test_text();
@@ -935,6 +957,7 @@ int main(void) {
     test_indicators();
     test_purview();
     test_json_values();
+    test_json_handoff();
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

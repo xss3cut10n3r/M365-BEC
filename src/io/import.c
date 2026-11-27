@@ -365,6 +365,28 @@ gboolean importer_row(Importer *im, GPtrArray *values, const char *raw, const JV
     const JV *resources = im->json ? j_get(record, "targetResources") : NULL;
     for (guint i = 0; resources && resources->t == J_ARR && i < resources->n; i++)
         g_ptr_array_add(users, j_text(j_get(resources->u.a[i], "userPrincipalName"), FALSE));
+    const JV *original = im->own_export && im->json ? j_get(record, "Record") : NULL;
+    if (original && original->t == J_OBJ) {
+        // Exported records keep their mailboxes.
+        static const char *const fields[] = {"recipient", "target"};
+        for (guint f = 0; f < G_N_ELEMENTS(fields); f++) {
+            GPtrArray *found = record_values(original, fields[f]);
+            for (guint i = 0; i < found->len; i++)
+                if (f == 0 || strchr(found->pdata[i], '@'))
+                    g_ptr_array_add(users, g_strdup(found->pdata[i]));
+            g_ptr_array_free(found, TRUE);
+        }
+        static const char *const keys[] = {"MailboxOwnerUPN", "Username", "userPrincipalName", "UserId"};
+        JDoc *nested = NULL;
+        const JV *data = j_get(original, "AuditData");
+        if (data && data->t == J_STR)
+            nested = j_parse(data->u.s, -1, 0, NULL);
+        for (guint k = 0; k < G_N_ELEMENTS(keys); k++) {
+            g_ptr_array_add(users, j_text(j_get(original, keys[k]), FALSE));
+            g_ptr_array_add(users, j_text(j_get(nested ? nested->root : NULL, keys[k]), FALSE));
+        }
+        j_free(nested);
+    }
     char **recipients =
         g_strsplit(GET(im, values, "recipient_address", "recipientaddress", "recipient address", "recipient_status"), ";", -1);
     for (char **entry = recipients; *entry; entry++) {
