@@ -1890,6 +1890,8 @@ static GtkWidget *build_welcome(App *app) {
     app->welcome_text = left_label("", "secondary");
     gtk_label_set_ellipsize(GTK_LABEL(app->welcome_text), PANGO_ELLIPSIZE_MIDDLE);
     gtk_label_set_selectable(GTK_LABEL(app->welcome_text), TRUE);
+    // Selectable without a caret.
+    gtk_widget_add_css_class(app->welcome_text, "plainSelect");
     gtk_box_append(GTK_BOX(app->welcome_case), app->welcome_text);
     GtkWidget *case_buttons = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
     gtk_widget_set_margin_top(case_buttons, 10);
