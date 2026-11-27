@@ -219,7 +219,12 @@ static gboolean tab_key(GtkEventControllerKey *controller, guint key, guint code
         step = -1;
     else if (control && !other && (key == GDK_KEY_Page_Down || key == GDK_KEY_KP_Page_Down))
         step = 1;
-    if (!step)
+    if (!step || !app->has_active)
+        return FALSE;
+    GtkWidget *focus = gtk_window_get_focus(app->window);
+    // Typing and menus keep arrows.
+    if (focus && (GTK_IS_EDITABLE(focus) || GTK_IS_TEXT(focus) || gtk_widget_get_ancestor(focus, GTK_TYPE_POPOVER) ||
+                  (GTK_IS_TEXT_VIEW(focus) && gtk_text_view_get_editable(GTK_TEXT_VIEW(focus)))))
         return FALSE;
     // Ends stop, never wrap.
     int current = gtk_notebook_get_current_page(GTK_NOTEBOOK(app->tabs));
@@ -2099,7 +2104,7 @@ App *app_new(GtkApplication *gtk) {
     GtkEventController *tab_keys = gtk_event_controller_key_new();
     gtk_event_controller_set_propagation_phase(tab_keys, GTK_PHASE_CAPTURE);
     g_signal_connect(tab_keys, "key-pressed", G_CALLBACK(tab_key), app);
-    gtk_widget_add_controller(app->tabs, tab_keys);
+    gtk_widget_add_controller(GTK_WIDGET(app->window), tab_keys);
     // Own arrows only scroll.
     app->tab_scroll = gtk_scrolled_window_new();
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(app->tab_scroll), GTK_POLICY_EXTERNAL, GTK_POLICY_NEVER);
