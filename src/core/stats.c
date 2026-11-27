@@ -3,9 +3,13 @@
 #include <string.h>
 
 #define CONSENT                                                                                               \
-    "source = \"Entra directory audit\" AND (operation contains \"consent\" OR operation contains "          \
+    "(source = \"Entra directory audit\" OR source = \"Graph directory audit\") AND "                        \
+    "(operation contains \"consent\" OR operation contains "                                                 \
     "\"application\" OR operation contains \"service principal\" OR operation contains \"app role\" OR "     \
     "operation contains \"permission grant\")"
+
+// Graph failures carry their reason.
+#define GRAPH_FAILURE "(source = \"Graph sign-ins\" AND result != \"Success\" AND result != \"\")"
 
 const Report REPORTS[] = {
     {"activity", "Activity over time", {"time"}, {"Interval start (UTC)"}, ""},
@@ -25,12 +29,12 @@ const Report REPORTS[] = {
     {"locations", "Sign-in locations", {"location"}, {"Location"}, ""},
     {"applications", "Applications", {"application"}, {"Application"}, ""},
     {"clients", "Client operating systems", {"os"}, {"Operating system"}, ""},
-    {"methods", "Authentication steps", {"authmethod", "result"}, {"Method", "Recorded outcome"}, ""},
+    {"methods", "Authentication steps", {"authstep"}, {"Method and recorded outcome"}, ""},
     {"policies", "Conditional Access", {"conditionalaccess"}, {"Recorded result"}, ""},
     {"rules", "Inbox rule changes", {"operation", "rule"}, {"Operation", "Rule name or identity"}, ""},
     {"access", "Mailbox access types", {"access"}, {"Access type"}, ""},
-    {"folders", "Accessed folders", {"folder"}, {"Folder"}, ""},
-    {"items", "Accessed mail items", {"mailitem"}, {"Message or item identifier"}, ""},
+    {"folders", "Mail folders", {"folder"}, {"Folder"}, ""},
+    {"items", "Mail items", {"mailitem"}, {"Message or item identifier"}, ""},
     {"consent", "Application and consent changes", {"operation", "result"}, {"Directory operation", "Result"}, CONSENT},
     {"marks", "Analyst-marked events", {"verdict", "source", "operation"}, {"Verdict", "Source", "Operation"},
      "marked = true"},
@@ -112,6 +116,8 @@ static char *indicator_expression(const char *label) {
                                    INDICATORS[i].contains ? "contains" : "=", quoted);
             g_free(quoted);
         }
+        if (INDICATORS[i].result)
+            g_string_append(out, " OR " GRAPH_FAILURE);
     }
     return g_string_free(out, FALSE);
 }
@@ -130,9 +136,10 @@ static GPtrArray *indicators(sqlite3 *db, gint64 log, const char *filter, GError
         g_ptr_array_free(args, TRUE);
         return NULL;
     }
-    char *sql = g_strconcat("SELECT e.op,e.result,count(*),min(nullif(e.time,'')),max(nullif(e.time,''))"
-                            " FROM events e JOIN logs l ON l.id=e.log",
-                            clause, " GROUP BY e.op COLLATE NOCASE,e.result COLLATE NOCASE", NULL);
+    // Fold exactly like filters.
+    char *sql = g_strconcat("SELECT bql_fold(e.op),bql_fold(e.result),count(*),min(nullif(e.time,'')),max(nullif(e.time,'')),"
+                            "bql_fold(", SQL_SOURCE, ")='graph sign-ins' FROM events e JOIN logs l ON l.id=e.log",
+                            clause, " GROUP BY 1,2,6", NULL);
     GPtrArray *rows = g_ptr_array_new_with_free_func((GDestroyNotify)stat_row_free);
     for (guint i = 0; i < G_N_ELEMENTS(INDICATORS); i++) {
         StatRow *row = g_new0(StatRow, 1);
@@ -145,15 +152,15 @@ static GPtrArray *indicators(sqlite3 *db, gint64 log, const char *filter, GError
         args_bind(statement, args, 1);
         int state;
         while ((state = sqlite3_step(statement)) == SQLITE_ROW) {
-            char *op = g_utf8_strdown(column_text(statement, 0), -1);
-            char *result = g_utf8_strdown(column_text(statement, 1), -1);
+            const char *op = column_text(statement, 0), *result = column_text(statement, 1);
             const char *first = (const char *)sqlite3_column_text(statement, 3);
             const char *last = (const char *)sqlite3_column_text(statement, 4);
             for (guint i = 0; i < G_N_ELEMENTS(INDICATORS); i++) {
                 const char *value = INDICATORS[i].result ? result : op;
-                gboolean hit = FALSE;
+                // Any named Graph outcome fails.
+                gboolean hit = INDICATORS[i].result && sqlite3_column_int(statement, 5) && *result && strcmp(result, "success");
                 for (int k = 0; k < 6 && INDICATORS[i].values[k] && !hit; k++) {
-                    char *wanted = g_utf8_strdown(INDICATORS[i].values[k], -1);
+                    char *wanted = casefold(INDICATORS[i].values[k]);
                     hit = INDICATORS[i].contains ? strstr(value, wanted) != NULL : !strcmp(value, wanted);
                     g_free(wanted);
                 }
@@ -170,8 +177,6 @@ static GPtrArray *indicators(sqlite3 *db, gint64 log, const char *filter, GError
                     row->last = g_strdup(last);
                 }
             }
-            g_free(op);
-            g_free(result);
         }
         if (state != SQLITE_DONE) {
             bec_fail(error, "%s", sqlite3_errmsg(db));

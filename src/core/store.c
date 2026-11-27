@@ -1,7 +1,15 @@
 #include "core.h"
 
+#include <glib/gstdio.h>
+#include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef G_OS_WIN32
+#include <windows.h>
+#else
+#include <sys/stat.h>
+#endif
 
 static const char *const DDL[] = {
     "CREATE TABLE files(id INTEGER PRIMARY KEY, path TEXT, digest TEXT, size INTEGER, UNIQUE(path,digest))",
@@ -116,8 +124,90 @@ static gboolean protect_evidence(sqlite3 *db, GError **error) {
     return transact(db, steps, G_N_ELEMENTS(steps), error);
 }
 
+// Review tables may be missing.
+static void prepare_reader(sqlite3 *db) {
+    sqlite3_busy_timeout(db, 30000);
+    if (sql_int(db, "SELECT count(*) FROM sqlite_master WHERE name='verdict_rules'", NULL) == 0) {
+        sql_run(db, "CREATE TEMP TABLE " RULE_TABLE, NULL);
+        sql_run(db, "CREATE TEMP TABLE timeline_ids(event INTEGER PRIMARY KEY, number INTEGER UNIQUE)", NULL);
+        sql_run(db, "INSERT INTO timeline_ids " TIMELINE_ROWS, NULL);
+    }
+    register_functions(db);
+}
+
+static gboolean pending_wal(const char *path) {
+    char *wal = g_strconcat(path, "-wal", NULL);
+    GStatBuf info;
+    gboolean pending = g_stat(wal, &info) == 0 && info.st_size > 0;
+    g_free(wal);
+    return pending;
+}
+
+// Reads a settled case in place.
+static sqlite3 *open_immutable(const char *path, GError **error) {
+    if (pending_wal(path)) {
+        bec_fail(error, "This case has changes waiting in its -wal file. Open it from a writable folder first.");
+        return NULL;
+    }
+    char *absolute = g_canonicalize_filename(path, NULL);
+#ifdef G_OS_WIN32
+    for (char *p = absolute; *p; p++)
+        if (*p == '\\')
+            *p = '/';
+#endif
+    char *escaped = g_uri_escape_string(absolute, "/:", TRUE);
+    char *uri = g_strdup_printf("file://%s%s?immutable=1", escaped[0] == '/' ? "" : "/", escaped);
+    sqlite3 *db = NULL;
+    gboolean ok = sqlite3_open_v2(uri, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_URI, NULL) == SQLITE_OK;
+    g_free(uri);
+    g_free(escaped);
+    g_free(absolute);
+    GError *problem = NULL;
+    if (ok && sql_int(db, "PRAGMA application_id", &problem) != APP_ID && !problem)
+        bec_fail(&problem, "Choose a valid M365 BEC case file");
+    gint64 version = ok && !problem ? sql_int(db, "PRAGMA user_version", &problem) : 0;
+    if (ok && !problem && version == 2)
+        bec_fail(&problem, "This case uses an older format. Open it once from a writable folder to upgrade it.");
+    else if (ok && !problem && version != 3)
+        bec_fail(&problem, "Unsupported case format");
+    if (!ok || problem) {
+        if (problem)
+            g_propagate_error(error, problem);
+        else
+            bec_fail(error, "%s", db ? sqlite3_errmsg(db) : "Case file could not be opened");
+        sqlite3_close(db);
+        return NULL;
+    }
+    prepare_reader(db);
+    return db;
+}
+
+// Read-only folders block WAL files.
+static gboolean blocked_by_folder(sqlite3 *db) {
+    int code = sqlite3_errcode(db);
+    return code == SQLITE_READONLY || code == SQLITE_CANTOPEN;
+}
+
+// Keeps the case file complete.
+void case_settle(sqlite3 *db) {
+    sqlite3_wal_checkpoint_v2(db, NULL, SQLITE_CHECKPOINT_PASSIVE, NULL, NULL);
+}
+
+static gboolean commit(sqlite3 *db, GError **error) {
+    if (!sql_run(db, "COMMIT", error))
+        return FALSE;
+    case_settle(db);
+    return TRUE;
+}
+
 sqlite3 *case_connect(const char *path, GError **error) {
     sqlite3 *db = NULL;
+#ifdef G_OS_UNIX
+    // New cases stay owner-only.
+    int created = g_open(path, O_CREAT | O_EXCL | O_WRONLY, 0600);
+    if (created >= 0)
+        g_close(created, NULL);
+#endif
     if (sqlite3_open(path, &db) != SQLITE_OK) {
         bec_fail(error, "%s", db ? sqlite3_errmsg(db) : "Case file could not be opened");
         sqlite3_close(db);
@@ -126,18 +216,26 @@ sqlite3 *case_connect(const char *path, GError **error) {
     sqlite3_busy_timeout(db, 30000);
     GError *problem = NULL;
     gint64 identity = sql_int(db, "PRAGMA application_id", &problem);
+    if (problem && blocked_by_folder(db)) {
+        // Inspect settled cases in place.
+        g_clear_error(&problem);
+        sqlite3_close(db);
+        return open_immutable(path, error);
+    }
     if (!problem && identity != APP_ID) {
         if (sql_run(db, "BEGIN IMMEDIATE", &problem)) {
-            if (sql_int(db, "SELECT count(*) FROM sqlite_master", &problem) != 0) {
+            // Another process may have initialized.
+            gboolean fresh = sql_int(db, "PRAGMA application_id", &problem) != APP_ID;
+            if (fresh && !problem && sql_int(db, "SELECT count(*) FROM sqlite_master", &problem) != 0) {
                 if (!problem)
                     bec_fail(&problem, "Choose a valid M365 BEC case file");
             }
-            for (guint i = 0; !problem && i < G_N_ELEMENTS(DDL); i++)
+            for (guint i = 0; fresh && !problem && i < G_N_ELEMENTS(DDL); i++)
                 sql_run(db, DDL[i], &problem);
-            if (!problem)
+            if (fresh && !problem)
                 sql_run(db, "PRAGMA application_id=1111835441", &problem);
-            if (!problem)
-                sql_run(db, "PRAGMA user_version=2", &problem);
+            if (fresh && !problem)
+                sql_run(db, "PRAGMA user_version=3", &problem);
             if (!problem)
                 sql_run(db, "COMMIT", &problem);
         }
@@ -152,12 +250,27 @@ sqlite3 *case_connect(const char *path, GError **error) {
         };
         transact(db, migrate, G_N_ELEMENTS(migrate), &problem);
     }
-    if (!problem && sql_int(db, "PRAGMA user_version", &problem) != 2 && !problem)
+    gint64 version = problem ? 0 : sql_int(db, "PRAGMA user_version", &problem);
+    if (!problem && version != 2 && version != 3)
         bec_fail(&problem, "Unsupported case format");
     if (!problem)
         ensure_review_schema(db, &problem);
     if (!problem)
         protect_evidence(db, &problem);
+    if (!problem && version == 2) {
+        // Widen stored times to ticks.
+#define WIDEN(column) column "=substr(" column ",1,26)||'0Z'"
+        static const char *const widen[] = {
+            "UPDATE events SET " WIDEN("time") " WHERE length(time)=27",
+            "UPDATE verdict_rules SET " WIDEN("lo") " WHERE kind='time' AND length(lo)=27",
+            "UPDATE verdict_rules SET " WIDEN("hi") " WHERE kind='time' AND length(hi)=27",
+            "UPDATE marks SET " WIDEN("lo") " WHERE kind='time' AND length(lo)=27",
+            "UPDATE marks SET " WIDEN("hi") " WHERE kind='time' AND length(hi)=27",
+            "PRAGMA user_version=3",
+        };
+        if (sql_int(db, "PRAGMA user_version", &problem) == 2 && !problem)
+            transact(db, widen, G_N_ELEMENTS(widen), &problem);
+    }
     if (problem) {
         g_propagate_error(error, problem);
         sqlite3_close(db);
@@ -165,6 +278,7 @@ sqlite3 *case_connect(const char *path, GError **error) {
     }
     register_functions(db);
     sqlite3_exec(db, "PRAGMA journal_mode=WAL", NULL, NULL, NULL);
+    case_settle(db);
     return db;
 }
 
@@ -175,13 +289,11 @@ sqlite3 *case_read(const char *path, GError **error) {
         sqlite3_close(db);
         return NULL;
     }
-    sqlite3_busy_timeout(db, 30000);
-    if (sql_int(db, "SELECT count(*) FROM sqlite_master WHERE name='verdict_rules'", NULL) == 0) {
-        sql_run(db, "CREATE TEMP TABLE " RULE_TABLE, NULL);
-        sql_run(db, "CREATE TEMP TABLE timeline_ids(event INTEGER PRIMARY KEY, number INTEGER UNIQUE)", NULL);
-        sql_run(db, "INSERT INTO timeline_ids " TIMELINE_ROWS, NULL);
+    if (sqlite3_exec(db, "SELECT count(*) FROM sqlite_master", NULL, NULL, NULL) != SQLITE_OK && blocked_by_folder(db)) {
+        sqlite3_close(db);
+        return open_immutable(path, error);
     }
-    register_functions(db);
+    prepare_reader(db);
     return db;
 }
 
@@ -214,7 +326,7 @@ gboolean assign_verdict(sqlite3 *db, const char *kind, GPtrArray *pairs, const c
         g_propagate_error(error, problem);
         return FALSE;
     }
-    return sql_run(db, "COMMIT", error);
+    return commit(db, error);
 }
 
 // Marks every matching event.
@@ -257,7 +369,13 @@ gint64 mark_matches(sqlite3 *db, gint64 log, const char *query, const char *verd
         g_propagate_error(error, problem);
         return -1;
     }
-    return sql_run(db, "COMMIT", error) ? count : -1;
+    return commit(db, error) ? count : -1;
+}
+
+// Valid right after marking.
+gint64 last_batch(sqlite3 *db) {
+    gint64 batch = sql_int(db, "SELECT batch FROM verdict_rules WHERE id=last_insert_rowid()", NULL);
+    return batch > 0 ? batch : 0;
 }
 
 gboolean undo_verdict(sqlite3 *db, GError **error) {
@@ -270,7 +388,7 @@ gboolean undo_verdict(sqlite3 *db, GError **error) {
         sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
         return FALSE;
     }
-    return sql_run(db, "COMMIT", error);
+    return commit(db, error);
 }
 
 char *select_sql(GPtrArray *custom, GPtrArray *args) {
@@ -388,18 +506,74 @@ char *absolute_path(const char *path) {
 #endif
 }
 
-static gboolean same_path(const char *left, const char *right) {
-    char *a = absolute_path(left), *b = absolute_path(right);
+// Names one existing file.
+static gboolean file_identity(const char *path, guint64 identity[3]) {
 #ifdef G_OS_WIN32
-    char *fa = casefold(a), *fb = casefold(b);
-    gboolean same = !strcmp(fa, fb);
-    g_free(fa);
-    g_free(fb);
+    wchar_t *wide = g_utf8_to_utf16(path, -1, NULL, NULL, NULL);
+    if (!wide)
+        return FALSE;
+    HANDLE handle = CreateFileW(wide, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                                OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    g_free(wide);
+    if (handle == INVALID_HANDLE_VALUE)
+        return FALSE;
+    BY_HANDLE_FILE_INFORMATION info;
+    gboolean ok = GetFileInformationByHandle(handle, &info);
+    CloseHandle(handle);
+    if (ok) {
+        identity[0] = info.dwVolumeSerialNumber;
+        identity[1] = info.nFileIndexHigh;
+        identity[2] = info.nFileIndexLow;
+    }
+    return ok;
 #else
-    gboolean same = !strcmp(a, b);
+    struct stat info;
+    if (stat(path, &info) != 0)
+        return FALSE;
+    identity[0] = (guint64)info.st_dev;
+    identity[1] = (guint64)info.st_ino;
+    identity[2] = 0;
+    return TRUE;
 #endif
+}
+
+static gboolean same_identity(const char *left, const char *right, gboolean *known) {
+    guint64 a[3], b[3];
+    *known = file_identity(left, a) && file_identity(right, b);
+    return *known && a[0] == b[0] && a[1] == b[1] && a[2] == b[2];
+}
+
+static gboolean same_text(const char *left, const char *right) {
+#ifdef G_OS_WIN32
+    char *a = casefold(left), *b = casefold(right);
+    gboolean same = !strcmp(a, b);
     g_free(a);
     g_free(b);
+    return same;
+#else
+    return !strcmp(left, right);
+#endif
+}
+
+// Compares files, not spellings.
+gboolean same_file(const char *left, const char *right) {
+    gboolean known = FALSE;
+    gboolean same = same_identity(left, right, &known);
+    if (known)
+        return same;
+    char *a = absolute_path(left), *b = absolute_path(right);
+    // Missing files share parent folders.
+    char *folder_a = g_path_get_dirname(a), *folder_b = g_path_get_dirname(b);
+    char *name_a = g_path_get_basename(a), *name_b = g_path_get_basename(b);
+    same = same_identity(folder_a, folder_b, &known) && same_text(name_a, name_b);
+    if (!known)
+        same = same_text(a, b);
+    g_free(a);
+    g_free(b);
+    g_free(folder_a);
+    g_free(folder_b);
+    g_free(name_a);
+    g_free(name_b);
     return same;
 }
 
@@ -407,7 +581,7 @@ gboolean guard_destination(sqlite3 *db, const char *destination, GError **error)
     gboolean clash = FALSE;
     sqlite3_stmt *statement = sql_prepare(db, "SELECT path FROM files", NULL);
     while (statement && !clash && sqlite3_step(statement) == SQLITE_ROW)
-        clash = same_path(destination, column_text(statement, 0));
+        clash = same_file(destination, column_text(statement, 0));
     sqlite3_finalize(statement);
     statement = sql_prepare(db, "PRAGMA database_list", NULL);
     if (statement && sqlite3_step(statement) == SQLITE_ROW) {
@@ -415,7 +589,7 @@ gboolean guard_destination(sqlite3 *db, const char *destination, GError **error)
         static const char *const suffixes[] = {"", "-wal", "-shm", "-journal"};
         for (guint i = 0; i < G_N_ELEMENTS(suffixes) && !clash; i++) {
             char *path = g_strconcat(base, suffixes[i], NULL);
-            clash = same_path(destination, path);
+            clash = same_file(destination, path);
             g_free(path);
         }
     }

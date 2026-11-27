@@ -304,6 +304,17 @@ static char *term(Parser *parser) {
         result = g_strdup("event_match(l.headers,e.raw,?,?,?)");
         goto done;
     }
+    if (!strcmp(field, "markbatch")) {
+        // Internal scope for marked exports.
+        gint64 batch = g_ascii_strtoll(value, NULL, 10);
+        for (int i = 0; i < 3; i++)
+            args_int(parser->args, batch);
+        result = g_strdup("(e.id IN (SELECT CAST(lo AS INTEGER) FROM verdict_rules WHERE batch=? AND kind='event') OR "
+                          "EXISTS (SELECT 1 FROM ips i JOIN verdict_rules r ON r.kind='ip' AND r.lo=i.ip "
+                          "WHERE i.event=e.id AND r.batch=?) OR EXISTS (SELECT 1 FROM verdict_rules r "
+                          "WHERE r.batch=? AND r.kind='time' AND e.time!='' AND r.lo<=e.time AND r.hi>e.time))");
+        goto done;
+    }
     if (!strcmp(field, "row") || !strcmp(field, "id")) {
         gboolean decimal = *value != 0 && strlen(value) <= 19;
         for (const char *p = value; decimal && *p; p++)
@@ -334,9 +345,9 @@ static char *term(Parser *parser) {
                 goto done;
             }
         }
-        const char *column = ip ? "ip" : "value";
-        char *condition = contains ? g_strdup_printf("instr(lower(%s),lower(?))>0", column)
-                                   : g_strdup_printf("%s = ? COLLATE NOCASE", column);
+        // Identities fold like report groups.
+        char *condition = !ip ? g_strdup(contains ? "instr(bql_fold(value),bql_fold(?))>0" : "bql_fold(value) = bql_fold(?)")
+                              : g_strdup(contains ? "instr(lower(ip),lower(?))>0" : "ip = ? COLLATE NOCASE");
         args_text(parser->args, value);
         result = g_strdup_printf("%sEXISTS (SELECT 1 FROM %s WHERE event=e.id AND %s)",
                                  !strcmp(op, "!=") ? "NOT " : "", ip ? "ips" : "identities", condition);

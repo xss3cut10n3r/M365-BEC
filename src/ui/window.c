@@ -298,9 +298,27 @@ void app_inspect(App *app) {
         inspector_clear(app->inspector);
 }
 
+static GPtrArray *reload_logs(App *app);
+
+// Other processes may add logs.
+static void adopt_logs(App *app) {
+    gint64 count = app->logs->len, total = 0;
+    for (guint i = 0; i < app->logs->len; i++)
+        total += ((LogInfo *)app->logs->pdata[i])->total;
+    sqlite3_stmt *now = sql_prepare(app->db, "SELECT count(*),coalesce(sum(total),0) FROM logs", NULL);
+    gboolean changed = now && sqlite3_step(now) == SQLITE_ROW &&
+                       (sqlite3_column_int64(now, 0) != count || sqlite3_column_int64(now, 1) != total);
+    sqlite3_finalize(now);
+    if (!changed)
+        return;
+    g_ptr_array_free(reload_logs(app), TRUE);
+    statistics_refresh_all(app);
+}
+
 static void show_rows(App *app, GArray *ids) {
     View *view = app_view(app);
     app->loading = FALSE;
+    adopt_logs(app);
     guint count = ids->len;
     timeline_reset(app->timeline, app->db, ids);
     if (count) {
@@ -804,7 +822,8 @@ static void custom_free(gpointer data) {
     g_free(column);
 }
 
-static void import_finished(App *app, FileJob *job) {
+// Rereads logs, returning new ones.
+static GPtrArray *reload_logs(App *app) {
     GHashTable *before = g_hash_table_new(g_int64_hash, g_int64_equal);
     GArray *known = g_array_new(FALSE, FALSE, sizeof(gint64));
     for (guint i = 0; i < app->logs->len; i++)
@@ -820,6 +839,13 @@ static void import_finished(App *app, FileJob *job) {
         make_tab(app, 0);
     for (guint i = 0; i < added->len; i++)
         make_tab(app, ((LogInfo *)added->pdata[i])->id);
+    g_array_free(known, TRUE);
+    g_hash_table_destroy(before);
+    return added;
+}
+
+static void import_finished(App *app, FileJob *job) {
+    GPtrArray *added = reload_logs(app);
     if (added->len)
         app_tab(app, added->len == 1 ? ((LogInfo *)added->pdata[0])->id : 0);
     GString *warnings = g_string_new(NULL);
@@ -847,13 +873,12 @@ static void import_finished(App *app, FileJob *job) {
     }
     if (job->imported) {
         char *what = g_strdup_printf("%u evidence file(s) added", job->imported);
+        statistics_refresh_all(app);
         app_saved(app, what);
         g_free(what);
     }
     g_string_free(warnings, TRUE);
     g_ptr_array_free(added, TRUE);
-    g_array_free(known, TRUE);
-    g_hash_table_destroy(before);
     update_actions(app);
 }
 
@@ -910,7 +935,7 @@ static gpointer file_job_run(gpointer data) {
             g_free(name);
         }
     } else if (db && !strcmp(job->kind, "export")) {
-        export_events(db, job->destination, job->log, job->query, job->desc, job->order, job->custom, &error);
+        export_events(db, job->destination, job->log, job->query, job->desc, job->order, job->custom, NULL, &error);
     } else if (db) {
         extract_evidence(db, job->file, job->destination, &error);
     }
@@ -1153,6 +1178,7 @@ static void verdict_applied(App *app, GError *error, const char *what) {
         return;
     }
     app_saved(app, what);
+    statistics_refresh_all(app);
     app_refresh(app);
 }
 
@@ -1383,6 +1409,9 @@ static void activate(GSimpleAction *action, GVariant *parameter, gpointer user) 
         if (app->has_active) {
             remember_view(app);
             verdict_applied(app, error, "undo");
+        } else {
+            g_clear_error(&error);
+            statistics_refresh_all(app);
         }
     } else if (!strcmp(name, "home")) {
         go_home(app);

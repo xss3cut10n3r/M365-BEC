@@ -9,6 +9,7 @@
 #include <unistd.h>
 #else
 #include <io.h>
+#include <windows.h>
 #endif
 
 enum { C_ID, C_ROW, C_TIME, C_ACTOR, C_OP, C_RESULT, C_IP, C_ISSUE, C_KIND, C_NAME, C_SHEET, C_SOURCE, C_NUMBER, C_VERDICT, C_REASON, C_CUSTOM };
@@ -79,6 +80,7 @@ char *csv_line(GPtrArray *cells, gboolean neutralize) {
 typedef struct {
     sqlite3_stmt *rows;
     guint custom;
+    gint64 count;
     GPtrArray *cells;
     gboolean numeric[32];
 } Cursor;
@@ -92,6 +94,7 @@ static gboolean next_row(Cursor *cursor, sqlite3 *db, GError **error) {
         return FALSE;
     }
     sqlite3_stmt *r = cursor->rows;
+    cursor->count++;
     g_ptr_array_set_size(cursor->cells, 0);
     static const int order[] = {C_SOURCE, C_NAME, C_SHEET, C_ROW, C_TIME, C_ACTOR, C_OP, C_RESULT, C_IP, -1, C_ISSUE, C_NUMBER, C_VERDICT};
     for (guint i = 0; i < G_N_ELEMENTS(order); i++) {
@@ -143,8 +146,31 @@ static gboolean write_csv(Cursor *cursor, sqlite3 *db, const char *path, GPtrArr
     return ok;
 }
 
-static gboolean write_xlsx(Cursor *cursor, sqlite3 *db, const char *path, GPtrArray *titles, GError **error) {
-    char *folder = g_path_get_dirname(path);
+// The workbook writer takes ANSI paths.
+static char *writer_folder(const char *folder) {
+#ifdef G_OS_WIN32
+    gboolean ascii = TRUE;
+    for (const char *p = folder; *p && ascii; p++)
+        ascii = (unsigned char)*p < 0x80;
+    if (!ascii && GetACP() != CP_UTF8) {
+        // Short names avoid other alphabets.
+        wchar_t *wide = g_utf8_to_utf16(folder, -1, NULL, NULL, NULL), brief[MAX_PATH];
+        DWORD length = wide ? GetShortPathNameW(wide, brief, MAX_PATH) : 0;
+        g_free(wide);
+        char *narrow = length && length < MAX_PATH ? g_utf16_to_utf8(brief, -1, NULL, NULL, NULL) : NULL;
+        if (narrow)
+            return narrow;
+    }
+#endif
+    return g_strdup(folder);
+}
+
+static gboolean write_xlsx(Cursor *cursor, sqlite3 *db, const char *target, GPtrArray *titles, GError **error) {
+    char *parent = g_path_get_dirname(target), *name = g_path_get_basename(target);
+    char *folder = writer_folder(parent);
+    char *path = g_build_filename(folder, name, NULL);
+    g_free(parent);
+    g_free(name);
     lxw_workbook_options options = {.constant_memory = LXW_TRUE, .tmpdir = folder};
     lxw_workbook *book = workbook_new_opt(path, &options);
     lxw_worksheet *sheet = workbook_add_worksheet(book, "Timeline");
@@ -205,6 +231,7 @@ static gboolean write_xlsx(Cursor *cursor, sqlite3 *db, const char *path, GPtrAr
     }
     lxw_error status = workbook_close(book);
     g_free(folder);
+    g_free(path);
     if (problem) {
         g_propagate_error(error, problem);
         return FALSE;
@@ -299,6 +326,7 @@ static gboolean write_json(Cursor *cursor, sqlite3 *db, const char *path, GPtrAr
         gboolean json = log_is_json(name);
         sqlite3_bind_int64(origin, 1, sqlite3_column_int64(r, C_ID));
         if (sqlite3_step(origin) != SQLITE_ROW) {
+            cursor->count--;
             sqlite3_reset(origin);
             continue;
         }
@@ -357,7 +385,7 @@ static gboolean write_json(Cursor *cursor, sqlite3 *db, const char *path, GPtrAr
 }
 
 gboolean export_events(sqlite3 *db, const char *destination, gint64 log, const char *query, gboolean descending,
-                       const char *order_by, GPtrArray *custom, GError **error) {
+                       const char *order_by, GPtrArray *custom, gint64 *written, GError **error) {
     char *target = absolute_path(destination);
     const char *dot = strrchr(target, '.');
     const char *suffix = dot ? dot : "";
@@ -387,6 +415,9 @@ gboolean export_events(sqlite3 *db, const char *destination, gint64 log, const c
     sqlite3_finalize(cursor.rows);
     g_ptr_array_free(cursor.cells, TRUE);
     ok = ok && replace_file(temporary, target, error);
+    // Report rows actually written.
+    if (ok && written)
+        *written = cursor.count;
 done:
     if (temporary && !ok)
         g_unlink(temporary);

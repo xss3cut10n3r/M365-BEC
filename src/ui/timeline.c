@@ -526,6 +526,20 @@ static void remove_action(GSimpleAction *action, GVariant *parameter, gpointer u
     g_free(path);
 }
 
+// Redraws rows, keeping the selection.
+static void redraw_rows(Timeline *timeline) {
+    GtkSelectionModel *model = GTK_SELECTION_MODEL(timeline->selection);
+    GtkBitset *selected = gtk_selection_model_get_selection(model);
+    GtkBitset *kept = gtk_bitset_copy(selected);
+    gtk_bitset_unref(selected);
+    int current = timeline->current;
+    g_list_model_items_changed(G_LIST_MODEL(timeline->rows), 0, timeline->rows->count, timeline->rows->count);
+    if (!gtk_bitset_is_empty(kept))
+        gtk_selection_model_set_selection(model, kept, kept);
+    gtk_bitset_unref(kept);
+    timeline->current = current;
+}
+
 Timeline *timeline_new(App *app) {
     Timeline *timeline = g_new0(Timeline, 1);
     timeline->app = app;
@@ -642,7 +656,7 @@ gboolean timeline_add_column(Timeline *timeline, const char *label, const char *
     gtk_widget_set_tooltip_text(timeline->view, NULL);
     (void)column;
     rebuild_header_menus(timeline);
-    g_list_model_items_changed(G_LIST_MODEL(timeline->rows), 0, timeline->rows->count, timeline->rows->count);
+    redraw_rows(timeline);
     schedule_fit(timeline);
     return TRUE;
 }
@@ -684,7 +698,7 @@ void timeline_clear_columns(Timeline *timeline) {
 
 void timeline_set_colors(Timeline *timeline, gboolean colors) {
     timeline->colors = colors;
-    g_list_model_items_changed(G_LIST_MODEL(timeline->rows), 0, timeline->rows->count, timeline->rows->count);
+    redraw_rows(timeline);
 }
 
 double timeline_scroll(Timeline *timeline) {

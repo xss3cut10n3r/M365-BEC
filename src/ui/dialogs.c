@@ -554,6 +554,7 @@ static void range_accept(GtkWidget *widget, gpointer data) {
         } else {
             gtk_window_close(GTK_WINDOW(range->window));
             app_saved(app, "time range verdict");
+            statistics_refresh_all(app);
             app_refresh(app);
         }
         g_ptr_array_free(pairs, TRUE);
@@ -572,16 +573,21 @@ static void range_destroyed(GtkWidget *widget, gpointer data) {
 void dialog_mark_time(App *app, const char *verdict) {
     if (!app->has_active || app_busy(app))
         return;
-    const char *first = NULL, *last = NULL;
+    // Cached records may be evicted.
+    char *first = NULL, *last = NULL;
     GArray *selected = timeline_selected(app->timeline);
     for (guint i = 0; i < selected->len; i++) {
         Record *record = timeline_record(app->timeline, g_array_index(selected, guint, i));
         if (!record || !*record->time)
             continue;
-        if (!first || strcmp(record->time, first) < 0)
-            first = record->time;
-        if (!last || strcmp(record->time, last) > 0)
-            last = record->time;
+        if (!first || strcmp(record->time, first) < 0) {
+            g_free(first);
+            first = g_strdup(record->time);
+        }
+        if (!last || strcmp(record->time, last) > 0) {
+            g_free(last);
+            last = g_strdup(record->time);
+        }
     }
     Range *range = g_new0(Range, 1);
     range->app = app;
@@ -598,7 +604,7 @@ void dialog_mark_time(App *app, const char *verdict) {
     gtk_widget_set_hexpand(range->start, TRUE);
     gtk_editable_set_text(GTK_EDITABLE(range->start), first ? first : "");
     if (last && !g_str_has_prefix(last, "9999-12-31")) {
-        char *after = utc_add_microsecond(last);
+        char *after = utc_after(last);
         gtk_editable_set_text(GTK_EDITABLE(range->end), after);
         g_free(after);
     }
@@ -624,5 +630,7 @@ void dialog_mark_time(App *app, const char *verdict) {
     gtk_box_append(GTK_BOX(row), cancel);
     g_signal_connect(range->window, "destroy", G_CALLBACK(range_destroyed), range);
     g_array_free(selected, TRUE);
+    g_free(first);
+    g_free(last);
     gtk_window_present(GTK_WINDOW(range->window));
 }

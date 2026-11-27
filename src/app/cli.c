@@ -28,20 +28,24 @@ static void progress(const char *message, gpointer user) {
     fprintf(stderr, "%s\n", message);
 }
 
-// Applies command-line verdicts.
-static int cli_mark(sqlite3 *db, const Options *options) {
+// Names the requested verdict.
+static const char *mark_verdict(const Options *options) {
     static const char *const words[][2] = {{"good", "Good"}, {"bad", "Bad"}, {"unsure", "Unsure"}, {"clear", "Unmarked"}};
-    const char *verdict = NULL;
     for (guint i = 0; i < G_N_ELEMENTS(words); i++)
         if (!g_ascii_strcasecmp(options->mark, words[i][0]))
-            verdict = words[i][1];
-    gboolean ips = options->mark_ips && options->mark_ips[0];
-    if (!verdict || (!ips && !(options->filter && *options->filter))) {
-        fprintf(stderr, "Use --mark good|bad|unsure|clear with --filter BQL or --mark-ip IP.\n");
-        return 2;
-    }
+            return words[i][1];
+    return NULL;
+}
+
+static gboolean mark_by_ip(const Options *options) {
+    return options->mark_ips && options->mark_ips[0];
+}
+
+// Applies command-line verdicts.
+static int cli_mark(sqlite3 *db, const Options *options, gint64 *batch) {
+    const char *verdict = mark_verdict(options);
     GError *error = NULL;
-    if (ips) {
+    if (mark_by_ip(options)) {
         GPtrArray *pairs = g_ptr_array_new_with_free_func(g_free);
         for (char **ip = options->mark_ips; *ip && !error; ip++) {
             char *address = ip_normalize(*ip);
@@ -50,13 +54,17 @@ static int cli_mark(sqlite3 *db, const Options *options) {
             g_ptr_array_add(pairs, address);
             g_ptr_array_add(pairs, g_strdup(""));
         }
-        if (!error && assign_verdict(db, "ip", pairs, verdict, &error))
+        if (!error && assign_verdict(db, "ip", pairs, verdict, &error)) {
+            *batch = last_batch(db);
             printf("Marked %u IP addresses %s\n", pairs->len / 2, verdict);
+        }
         g_ptr_array_free(pairs, TRUE);
     } else {
         gint64 count = mark_matches(db, options->log, options->filter, verdict, 0, &error);
-        if (!error)
+        if (!error) {
+            *batch = count > 0 ? last_batch(db) : 0;
             printf("Marked %" G_GINT64_FORMAT " events %s\n", count, verdict);
+        }
     }
     if (error) {
         fprintf(stderr, "%s\n", error->message);
@@ -71,6 +79,25 @@ int cli_run(const Options *options) {
     if (!options->case_path) {
         fprintf(stderr, "Use --case CASE.bec with --export, --mark or --no-gui.\n");
         return 2;
+    }
+    if (options->mark) {
+        // Check scopes before writing.
+        gboolean filtered = options->filter && *options->filter;
+        if (!mark_verdict(options) || (!mark_by_ip(options) && !filtered)) {
+            fprintf(stderr, "Use --mark good|bad|unsure|clear with --filter BQL or --mark-ip IP.\n");
+            return 2;
+        }
+        if (mark_by_ip(options) && filtered) {
+            fprintf(stderr, "Use --mark with either --filter BQL or --mark-ip IP, not both. Nothing was marked.\n");
+            return 2;
+        }
+    }
+    // Exports never replace inputs.
+    for (char **file = options->files; options->export_path && file && *file; file++) {
+        if (same_file(options->export_path, *file)) {
+            fprintf(stderr, "Export failed: %s is an input file. Choose another destination.\n", options->export_path);
+            return 2;
+        }
     }
     GError *error = NULL;
     sqlite3 *db = case_connect(options->case_path, &error);
@@ -98,20 +125,21 @@ int cli_run(const Options *options) {
         fprintf(stderr, "Warning %s: %s\n", column_text(warnings, 0), column_text(warnings, 1));
     sqlite3_finalize(warnings);
     const char *filter = options->filter ? options->filter : "";
+    char *scope = NULL;
     if (options->mark) {
-        int marked = cli_mark(db, options);
+        gint64 batch = 0;
+        int marked = cli_mark(db, options, &batch);
         if (marked || !options->export_path) {
             sqlite3_close(db);
             fflush(stdout);
             return status ? status : marked;
         }
-        // IP marks export everything.
-        if (options->mark_ips && options->mark_ips[0] && !options->filter)
-            filter = "marked = true";
+        // Export exactly the events marked.
+        filter = scope = g_strdup_printf("markbatch = %" G_GINT64_FORMAT, batch);
     }
     if (options->export_path) {
-        if (export_events(db, options->export_path, options->log, filter, FALSE, "time", NULL, &error)) {
-            gint64 count = count_rows(db, options->log, filter, NULL);
+        gint64 count = 0;
+        if (export_events(db, options->export_path, options->log, filter, FALSE, "time", NULL, &count, &error)) {
             printf("Exported %" G_GINT64_FORMAT " events to %s\n", count, options->export_path);
         } else {
             fprintf(stderr, "Export failed: %s\n", error->message);
@@ -128,6 +156,7 @@ int cli_run(const Options *options) {
             printf("%" G_GINT64_FORMAT " events match\n", count);
         }
     }
+    g_free(scope);
     sqlite3_close(db);
     fflush(stdout);
     return status;

@@ -13,8 +13,9 @@ const Slot SLOTS[] = {
     {"os", {"Operating System"}, {NULL}},
     {"client", {"Client app", "clientAppUsed"}, {"ClientInfoString"}},
     {"authmethod", {"Authentication method"}, {NULL}},
+    {"authstep", {NULL}, {NULL}},
     {"conditionalaccess", {"Conditional Access", "conditionalAccessStatus"}, {NULL}},
-    {"serviceprincipal", {"Service principal ID", "ActorServicePrincipalId"}, {NULL}},
+    {"serviceprincipal", {"Service principal ID", "ActorServicePrincipalId", "servicePrincipalId"}, {NULL}},
     {"workload", {"Service"}, {"Workload"}},
     {"messageid", {"message_id", "MessageId", "Message ID"}, {NULL}},
     {"recipient", {"recipient_address", "RecipientAddress", "Recipient address", "recipient_status"}, {NULL}},
@@ -88,12 +89,16 @@ static gboolean has(const Columns *columns, const char *clean) {
 
 // Flat audit records lack AuditData.
 static gboolean flat_audit(const Columns *columns) {
-    return !has(columns, "auditdata") && has(columns, "creationtime") && has(columns, "operation") &&
-           has(columns, "recordtype");
+    return !has(columns, "auditdata") && has(columns, "creationtime") && has(columns, "operation");
+}
+
+// Timeline exports wrap original records.
+static gboolean wrapped(const Columns *columns) {
+    return has(columns, "record") && has(columns, "source row") && has(columns, "time (utc)") && has(columns, "verdict");
 }
 
 gboolean columns_support(const Columns *columns, const char *field) {
-    if (has(columns, "auditdata") || flat_audit(columns))
+    if (has(columns, "auditdata") || flat_audit(columns) || wrapped(columns))
         return TRUE;
     const Slot *slot = slot_find(field);
     for (int i = 0; slot && i < 5 && slot->outer[i]; i++)
@@ -101,6 +106,13 @@ gboolean columns_support(const Columns *columns, const char *field) {
             return TRUE;
     // Graph nests device details.
     if ((!strcmp(field, "device") || !strcmp(field, "os")) && has(columns, "devicedetail"))
+        return TRUE;
+    // Graph nests authentication steps.
+    if ((!strcmp(field, "authmethod") || !strcmp(field, "authstep")) && has(columns, "authenticationdetails"))
+        return TRUE;
+    if (!strcmp(field, "authstep") && has(columns, "authentication method"))
+        return TRUE;
+    if (!strcmp(field, "target") && has(columns, "targetresources"))
         return TRUE;
     if (!strcmp(field, "target"))
         for (guint i = 0; i < columns->clean->len; i++)
@@ -137,6 +149,7 @@ void event_fields_free(EventFields *fields) {
         return;
     if (fields->own_columns)
         columns_free(fields->columns);
+    event_fields_free(fields->inner);
     j_free(fields->row);
     j_free(fields->audit_doc);
     g_free(fields);
@@ -220,7 +233,7 @@ static const JV *first_truthy(const JV *object, const char *a, const char *b, co
 
 static void add_text(GPtrArray *texts, const JV *value) {
     if (value && value->t == J_STR)
-        g_ptr_array_add(texts, g_strdup(value->u.s));
+        g_ptr_array_add(texts, j_string(value));
 }
 
 static void split_recipients(GPtrArray *texts, const char *cell, gboolean statuses) {
@@ -239,6 +252,16 @@ static void split_recipients(GPtrArray *texts, const char *cell, gboolean status
     g_strfreev(entries);
 }
 
+// Pairs a method with its outcome.
+static void add_step(GPtrArray *texts, const JV *method, const JV *succeeded) {
+    if (!method || method->t != J_STR || !*method->u.s)
+        return;
+    char *outcome = j_text(succeeded, TRUE);
+    const char *label = !g_ascii_strcasecmp(outcome, "true") ? "Succeeded" : !g_ascii_strcasecmp(outcome, "false") ? "Failed" : outcome;
+    g_ptr_array_add(texts, *label ? g_strdup_printf("%s \xc2\xb7 %s", method->u.s, label) : g_strdup(method->u.s));
+    g_free(outcome);
+}
+
 static gboolean target_column(const char *clean) {
     if (!g_str_has_prefix(clean, "target") || !g_ascii_isdigit(clean[6]))
         return FALSE;
@@ -248,7 +271,51 @@ static gboolean target_column(const char *clean) {
     return !strcmp(p, "userprincipalname") || !strcmp(p, "displayname") || !strcmp(p, "objectid");
 }
 
+// Presents an object as a row.
+static EventFields *object_fields(const JV *object) {
+    GString *headers = g_string_new("["), *raw = g_string_new("[");
+    for (guint i = 0; i < object->n; i++) {
+        if (i) {
+            g_string_append_c(headers, ',');
+            g_string_append_c(raw, ',');
+        }
+        j_quote(headers, object->u.m[i].key, -1);
+        j_dump(raw, object->u.m[i].v, J_RAW_NUMBERS);
+    }
+    g_string_append_c(headers, ']');
+    g_string_append_c(raw, ']');
+    EventFields *fields = event_fields_new(headers->str, raw->str);
+    g_string_free(headers, TRUE);
+    g_string_free(raw, TRUE);
+    return fields;
+}
+
+GPtrArray *record_values(const JV *record, const char *field) {
+    if (!record || record->t != J_OBJ)
+        return g_ptr_array_new_with_free_func(g_free);
+    EventFields *fields = object_fields(record);
+    GPtrArray *found = event_values(fields, field);
+    event_fields_free(fields);
+    return found;
+}
+
+static EventFields *unwrap(EventFields *fields) {
+    if (fields->unwrapped || !wrapped(fields->columns))
+        return fields->inner;
+    fields->unwrapped = TRUE;
+    GPtrArray *cells = g_ptr_array_new();
+    outer(fields, "Record", cells);
+    if (cells->len && ((const JV *)cells->pdata[0])->t == J_OBJ)
+        fields->inner = object_fields(cells->pdata[0]);
+    g_ptr_array_free(cells, TRUE);
+    return fields->inner;
+}
+
 GPtrArray *event_values(EventFields *fields, const char *field) {
+    // Exported records answer for themselves.
+    EventFields *original = unwrap(fields);
+    if (original)
+        return event_values(original, field);
     GPtrArray *texts = g_ptr_array_new_with_free_func(g_free);
     const Slot *slot = slot_find(field);
     if (!slot)
@@ -313,13 +380,55 @@ GPtrArray *event_values(EventFields *fields, const char *field) {
             for (guint i = 0; i < cells->len; i++)
                 add_text(texts, j_get(cells->pdata[i], field[0] == 'd' ? "deviceId" : "operatingSystem"));
         }
-        if (!strcmp(field, "session")) {
+        if (!strcmp(field, "authmethod") || !strcmp(field, "authstep")) {
+            gboolean steps = !strcmp(field, "authstep");
+            GPtrArray *outcomes = g_ptr_array_new();
+            if (steps) {
+                outer(fields, "Authentication method", cells);
+                outer(fields, "Succeeded", outcomes);
+            }
+            for (guint i = 0; steps && i < cells->len; i++)
+                add_step(texts, cells->pdata[i], i < outcomes->len ? outcomes->pdata[i] : NULL);
+            g_ptr_array_free(outcomes, TRUE);
+            g_ptr_array_set_size(cells, 0);
+            outer(fields, "authenticationDetails", cells);
+            for (guint i = 0; i < cells->len; i++) {
+                const JV *list = cells->pdata[i];
+                for (guint k = 0; list->t == J_ARR && k < list->n; k++) {
+                    const JV *method = j_get(list->u.a[k], "authenticationMethod");
+                    if (steps)
+                        add_step(texts, method, j_get(list->u.a[k], "succeeded"));
+                    else
+                        add_text(texts, method);
+                }
+            }
+        } else if (!strcmp(field, "session")) {
             add_text(texts, j_get(j_get(record, "AppAccessContext"), "AADSessionId"));
-        } else if (!strcmp(field, "subject")) {
-            add_text(texts, j_get(item, "Subject"));
-        } else if (!strcmp(field, "messageid")) {
-            add_text(texts, j_get(item, "InternetMessageId"));
+        } else if (!strcmp(field, "subject") || !strcmp(field, "messageid")) {
+            const char *key = field[0] == 's' ? "Subject" : "InternetMessageId";
+            add_text(texts, j_get(item, key));
+            // Deletions list affected messages.
+            const JV *affected = j_get(record, "AffectedItems");
+            for (guint i = 0; affected && affected->t == J_ARR && i < affected->n; i++)
+                add_text(texts, j_get(affected->u.a[i], key));
         } else if (!strcmp(field, "folder") || !strcmp(field, "mailitem")) {
+            const JV *affected = j_get(record, "AffectedItems");
+            for (guint i = 0; affected && affected->t == J_ARR && i < affected->n; i++) {
+                const JV *entry = affected->u.a[i];
+                if (entry->t != J_OBJ)
+                    continue;
+                if (!strcmp(field, "folder"))
+                    add_text(texts, j_get(j_get(entry, "ParentFolder"), "Path"));
+                else
+                    add_text(texts, first_truthy(entry, "InternetMessageId", "ImmutableId", "Id"));
+            }
+            // Single items name their folder.
+            if (item && item->t == J_OBJ) {
+                if (!strcmp(field, "folder"))
+                    add_text(texts, j_get(j_get(item, "ParentFolder"), "Path"));
+                else
+                    add_text(texts, first_truthy(item, "InternetMessageId", "ImmutableId", "Id"));
+            }
             const JV *folders = j_get(record, "Folders");
             for (guint i = 0; folders && folders->t == J_ARR && i < folders->n; i++) {
                 const JV *folder = folders->u.a[i];
@@ -360,6 +469,16 @@ GPtrArray *event_values(EventFields *fields, const char *field) {
                 outer(fields, clean, cells);
                 for (guint k = 0; k < cells->len; k++)
                     add_text(texts, cells->pdata[k]);
+            }
+            // Graph lists affected resources.
+            g_ptr_array_set_size(cells, 0);
+            outer(fields, "targetResources", cells);
+            static const char *const names[] = {"userPrincipalName", "displayName", "id"};
+            for (guint i = 0; i < cells->len; i++) {
+                const JV *list = cells->pdata[i];
+                for (guint k = 0; list->t == J_ARR && k < list->n; k++)
+                    for (guint n = 0; n < G_N_ELEMENTS(names); n++)
+                        add_text(texts, j_get(list->u.a[k], names[n]));
             }
         }
     }
@@ -626,8 +745,10 @@ static gboolean folded_hit(GPtrArray *found, const char *value, gboolean contain
 
 // Plain logs skip tree parsing.
 static gboolean plain_slot_values(Columns *columns, const char *field, const char *raw, GPtrArray *out) {
-    if (has(columns, "auditdata") || flat_audit(columns) || !strcmp(field, "recipient") || !strcmp(field, "delivery") ||
-        !strcmp(field, "target") || has(columns, "devicedetail"))
+    if (has(columns, "auditdata") || flat_audit(columns) || wrapped(columns) || !strcmp(field, "recipient") ||
+        !strcmp(field, "delivery") ||
+        !strcmp(field, "target") || !strcmp(field, "authstep") || has(columns, "devicedetail") ||
+        has(columns, "authenticationdetails"))
         return FALSE;
     const Slot *slot = slot_find(field);
     int indexes[32];

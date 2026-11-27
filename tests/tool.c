@@ -159,7 +159,7 @@ int main(int argc, char **argv) {
     } else if (!strcmp(command, "export") && argc >= 8) {
         char *filter = argument(argv[5]);
         GPtrArray *custom = custom_columns(argc, argv, 8);
-        if (!export_events(db, argv[3], atoll(argv[4]), filter, atoi(argv[7]), argv[6], custom, &error))
+        if (!export_events(db, argv[3], atoll(argv[4]), filter, atoi(argv[7]), argv[6], custom, NULL, &error))
             return fail(error);
         printf("ok\n");
     } else if (!strcmp(command, "extract") && argc >= 5) {

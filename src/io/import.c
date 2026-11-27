@@ -20,7 +20,7 @@ struct Importer {
     guint width;
     GHashTable *positions;
     GArray *targets;
-    gint64 count, problems;
+    gint64 count, problems, line;
     gboolean flat_audit;
     gboolean own_export;
     GString *warnings;
@@ -75,7 +75,9 @@ static char *detect(Importer *im, const char *label) {
         // Recognize common JSON shapes.
         if (has_header(im, "creationtime") && has_header(im, "operation"))
             kind = "Purview audit";
-        else if (has_header(im, "createddatetime") && has_header(im, "userprincipalname"))
+        else if (has_header(im, "createddatetime") &&
+                 (has_header(im, "userprincipalname") || has_header(im, "serviceprincipalid") ||
+                  has_header(im, "signineventtypes")))
             kind = "Graph sign-ins";
         else if (has_header(im, "activitydatetime") && has_header(im, "activitydisplayname"))
             kind = "Graph directory audit";
@@ -119,7 +121,7 @@ gboolean importer_begin(Importer *im, const char *sheet, GError **error) {
     (void)error;
     im->active = FALSE;
     im->log = 0;
-    im->count = im->problems = 0;
+    im->count = im->problems = im->line = 0;
     g_free(im->kind);
     im->kind = g_strdup(sheet);
     g_string_truncate(im->warnings, 0);
@@ -151,7 +153,8 @@ static gboolean start_log(Importer *im, GPtrArray *headers, GError **error) {
     im->kind = detect(im, label);
     g_free(label);
     im->flat_audit = im->json && !has_header(im, "auditdata") && !strcmp(im->kind, "Purview audit");
-    im->own_export = im->json && !strcmp(im->kind, "Timeline") && has_header(im, "record") && has_header(im, "verdict");
+    // Timeline exports carry verdicts.
+    im->own_export = !strcmp(im->kind, "Timeline") && has_header(im, "verdict") && (!im->json || has_header(im, "record"));
     sqlite3_stmt *insert = sql_prepare(im->db, "INSERT INTO logs(file,name,sheet,kind,headers) VALUES(?,?,?,?,?)", error);
     gboolean ok = FALSE;
     if (insert) {
@@ -199,14 +202,14 @@ static void add_address(GPtrArray *ips, const char *value) {
 }
 
 gboolean importer_row(Importer *im, GPtrArray *values, const char *raw, const JV *record, GError **error) {
+    // Source rows keep their numbers.
+    im->line++;
+    if (!values)
+        return TRUE;
     if (!im->log && !im->active) {
-        // The first row names columns.
-        if (im->count < 0)
+        // The first filled row names columns.
+        if (!values->len && !im->json)
             return TRUE;
-        if (!values->len && !im->json) {
-            im->count = -1;
-            return TRUE;
-        }
         return start_log(im, values, error);
     }
     if (!im->active)
@@ -265,10 +268,12 @@ gboolean importer_row(Importer *im, GPtrArray *values, const char *raw, const JV
         g_free(text);
     }
     static const char *const ip_columns[] = {"ip address", "ipaddress", "ip address (seen by resource)",
-                                             "global secure access ip address", "original_client_ip", "client_ip", "ip"};
+                                             "global secure access ip address", "original_client_ip", "client_ip", "ip",
+                                             "fromip", "toip"};
     for (guint i = 0; i < G_N_ELEMENTS(ip_columns); i++) {
         const char *cell = GET(im, values, ip_columns[i]);
-        if (im->json && strstr(cell, ", ")) {
+        // Timeline cells list several addresses.
+        if (strstr(cell, ", ")) {
             char **parts = g_strsplit(cell, ", ", -1);
             for (char **part = parts; *part; part++)
                 add_address(ips, *part);
@@ -279,7 +284,7 @@ gboolean importer_row(Importer *im, GPtrArray *values, const char *raw, const JV
     }
     if (im->json) {
         // JSON exports use other names.
-        prefer(&actor, g_strdup(GET(im, values, "userprincipalname", "userdisplayname")));
+        prefer(&actor, g_strdup(GET(im, values, "userprincipalname", "userdisplayname", "serviceprincipalname")));
         prefer(&actor, nested_text(record, "initiatedBy", "user", "userPrincipalName"));
         prefer(&actor, nested_text(record, "initiatedBy", "app", "displayName"));
         prefer(&stamp, g_strdup(GET(im, values, "createddatetime", "activitydatetime", "creationtime", "timegenerated",
@@ -287,6 +292,10 @@ gboolean importer_row(Importer *im, GPtrArray *values, const char *raw, const JV
         prefer(&op, g_strdup(GET(im, values, "activitydisplayname", "operationname")));
         prefer(&result, g_strdup(GET(im, values, "resultstatus")));
         add_address(ips, GET(im, values, "clientip", "clientipaddress", "calleripaddress"));
+        // Graph audits nest the initiator.
+        char *initiator = nested_text(record, "initiatedBy", "user", "ipAddress");
+        add_address(ips, initiator);
+        g_free(initiator);
         if (!*request && g_str_has_suffix(im->kind, " sign-ins")) {
             g_free(request);
             request = g_utf8_strdown(GET(im, values, "id"), -1);
@@ -313,7 +322,7 @@ gboolean importer_row(Importer *im, GPtrArray *values, const char *raw, const JV
     }
     sqlite3_stmt *event = im->event;
     sqlite3_bind_int64(event, 1, im->log);
-    sqlite3_bind_int64(event, 2, im->json ? count : count + 1);
+    sqlite3_bind_int64(event, 2, im->json ? count : im->line);
     sqlite3_bind_text(event, 3, time, -1, SQLITE_STATIC);
     sqlite3_bind_text(event, 4, actor, -1, SQLITE_STATIC);
     sqlite3_bind_text(event, 5, op, -1, SQLITE_STATIC);
@@ -335,12 +344,48 @@ gboolean importer_row(Importer *im, GPtrArray *values, const char *raw, const JV
     GPtrArray *users = g_ptr_array_new_with_free_func(g_free);
     g_ptr_array_add(users, g_strdup(actor));
     g_ptr_array_add(users, j_text(j_get(audit, "MailboxOwnerUPN"), FALSE));
+    // Sent mail reaches recipient mailboxes.
+    const JV *sent = j_get(j_get(audit, "Item"), "Recipients");
+    for (guint i = 0; sent && sent->t == J_ARR && i < sent->n; i++) {
+        const JV *entry = sent->u.a[i];
+        static const char *const keys[] = {"Address", "EmailAddress", "SmtpAddress"};
+        for (guint k = 0; entry->t == J_OBJ && k < G_N_ELEMENTS(keys); k++)
+            if (j_get(entry, keys[k]) && j_get(entry, keys[k])->t == J_STR)
+                g_ptr_array_add(users, g_strdup(j_get(entry, keys[k])->u.s));
+        if (entry->t == J_STR)
+            g_ptr_array_add(users, g_strdup(entry->u.s));
+    }
     g_ptr_array_add(users, g_strdup(GET(im, values, "actoruserprincipalname")));
     g_ptr_array_add(users, g_strdup(GET(im, values, "username")));
     for (guint i = 0; i < im->targets->len; i++) {
         guint index = g_array_index(im->targets, guint, i);
         if (index < values->len)
             g_ptr_array_add(users, g_strdup(values->pdata[index]));
+    }
+    const JV *resources = im->json ? j_get(record, "targetResources") : NULL;
+    for (guint i = 0; resources && resources->t == J_ARR && i < resources->n; i++)
+        g_ptr_array_add(users, j_text(j_get(resources->u.a[i], "userPrincipalName"), FALSE));
+    const JV *original = im->own_export && im->json ? j_get(record, "Record") : NULL;
+    if (original && original->t == J_OBJ) {
+        // Exported records keep their mailboxes.
+        static const char *const fields[] = {"recipient", "target"};
+        for (guint f = 0; f < G_N_ELEMENTS(fields); f++) {
+            GPtrArray *found = record_values(original, fields[f]);
+            for (guint i = 0; i < found->len; i++)
+                if (f == 0 || strchr(found->pdata[i], '@'))
+                    g_ptr_array_add(users, g_strdup(found->pdata[i]));
+            g_ptr_array_free(found, TRUE);
+        }
+        static const char *const keys[] = {"MailboxOwnerUPN", "Username", "userPrincipalName", "UserId"};
+        JDoc *nested = NULL;
+        const JV *data = j_get(original, "AuditData");
+        if (data && data->t == J_STR)
+            nested = j_parse(data->u.s, -1, 0, NULL);
+        for (guint k = 0; k < G_N_ELEMENTS(keys); k++) {
+            g_ptr_array_add(users, j_text(j_get(original, keys[k]), FALSE));
+            g_ptr_array_add(users, j_text(j_get(nested ? nested->root : NULL, keys[k]), FALSE));
+        }
+        j_free(nested);
     }
     char **recipients =
         g_strsplit(GET(im, values, "recipient_address", "recipientaddress", "recipient address", "recipient_status"), ";", -1);
@@ -581,6 +626,7 @@ ImportState import_file(sqlite3 *db, const char *path, ProgressFn progress, gpoi
     g_free(im.kind);
     if (ok && sql_run(db, "COMMIT", error)) {
         state = IMPORT_DONE;
+        case_settle(db);
     } else {
         // Leave the case unchanged.
         sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);

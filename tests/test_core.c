@@ -3,6 +3,15 @@
 #include <glib/gstdio.h>
 #include <stdio.h>
 #include <string.h>
+#include <xlsxwriter.h>
+#include <zip.h>
+
+#ifdef G_OS_WIN32
+#include <windows.h>
+#else
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 static int failures, checks;
 static char *root;
@@ -69,7 +78,7 @@ static char *text_of(sqlite3 *db, const char *sql) {
 static gboolean save(sqlite3 *db, const char *name, const char *filter) {
     char *path = file(name);
     GError *error = NULL;
-    gboolean ok = export_events(db, path, 0, filter, FALSE, "time", NULL, &error);
+    gboolean ok = export_events(db, path, 0, filter, FALSE, "time", NULL, NULL, &error);
     if (error) {
         printf("export %s: %s\n", name, error->message);
         g_clear_error(&error);
@@ -80,7 +89,7 @@ static gboolean save(sqlite3 *db, const char *name, const char *filter) {
 
 static void test_text(void) {
     char *stamp = utc_normalize("2026-01-02T11:04:00+05:30");
-    CHECK(!strcmp(stamp, "2026-01-02T05:34:00.000000Z"));
+    CHECK(!strcmp(stamp, "2026-01-02T05:34:00.0000000Z"));
     g_free(stamp);
     stamp = utc_normalize("not a date");
     CHECK(!*stamp);
@@ -158,6 +167,8 @@ static void test_tabular(void) {
     CHECK(load(db, "out.xlsx", NULL) == IMPORT_DONE);
     CHECK(count(db, "file = \"out.xlsx\" AND source = \"Interactive sign-ins\"") == 2);
     CHECK(count(db, "file = \"out.xlsx\" AND actor = \"=other@example.org\"") == 1);
+    // Imported verdicts undo first.
+    CHECK(undo_verdict(db, NULL) && count(db, "marked = true") == 2);
     CHECK(undo_verdict(db, NULL));
     CHECK(count(db, "marked = true") == 0);
     g_ptr_array_free(pairs, TRUE);
@@ -377,6 +388,620 @@ static void test_statistics(void) {
     sqlite3_close(db);
 }
 
+static char *slurp(const char *path) {
+    char *text = NULL;
+    g_file_get_contents(path, &text, NULL, NULL);
+    return text ? text : g_strdup("");
+}
+
+static gboolean export_to(sqlite3 *db, const char *path, const char *filter) {
+    return export_events(db, path, 0, filter, FALSE, "time", NULL, NULL, NULL);
+}
+
+// Aliases reach the same file.
+static void test_aliases(void) {
+    sqlite3 *db = open_case("alias.bec");
+    char *real = file("real"), *alias = file("alias"), *hard = file("hard.csv");
+    g_mkdir(real, 0700);
+    char *source = g_build_filename(real, "ev.csv", NULL), *via = g_build_filename(alias, "ev.csv", NULL);
+    char *other = g_build_filename(alias, "other.csv", NULL);
+    g_file_set_contents(source, "Operation\nOne\n", -1, NULL);
+#ifdef G_OS_WIN32
+    char *command = g_strdup_printf("cmd /c mklink /J \"%s\" \"%s\"", alias, real);
+    g_spawn_command_line_sync(command, NULL, NULL, NULL, NULL);
+    g_free(command);
+    CreateHardLinkA(hard, source, NULL);
+#else
+    CHECK(symlink(real, alias) == 0);
+    CHECK(link(source, hard) == 0);
+#endif
+    CHECK(g_file_test(via, G_FILE_TEST_EXISTS) && g_file_test(hard, G_FILE_TEST_EXISTS));
+    CHECK(import_file(db, source, NULL, NULL, NULL) == IMPORT_DONE);
+    CHECK(!export_to(db, source, "") && !export_to(db, via, "") && !export_to(db, hard, ""));
+    CHECK(!extract_evidence(db, 1, via, NULL));
+    CHECK(export_to(db, other, ""));
+    char *kept = slurp(source);
+    CHECK(!strcmp(kept, "Operation\nOne\n"));
+    // Deleted evidence keeps its name.
+    g_remove(hard);
+    g_remove(source);
+    CHECK(!export_to(db, via, ""));
+    g_free(kept);
+    g_free(real);
+    g_free(alias);
+    g_free(hard);
+    g_free(source);
+    g_free(via);
+    g_free(other);
+    sqlite3_close(db);
+}
+
+// Counts come from the snapshot.
+static void test_export_count(void) {
+    sqlite3 *db = open_case("count.bec"), *other = open_case("count.bec");
+    g_free(put("three.csv", "Operation\nA\nB\nC\n"));
+    g_free(put("late.csv", "Operation\nLate\n"));
+    CHECK(load(db, "three.csv", NULL) == IMPORT_DONE);
+    char *path = file("counted.json");
+    gint64 written = -1;
+    CHECK(export_events(db, path, 0, "operation != B", FALSE, "time", NULL, &written, NULL) && written == 2);
+    CHECK(load(other, "late.csv", NULL) == IMPORT_DONE);
+    CHECK(export_events(db, path, 0, "", FALSE, "time", NULL, &written, NULL) && written == 4);
+    char *text = slurp(path);
+    JDoc *doc = j_parse(text, -1, 0, NULL);
+    CHECK(doc && doc->root->n == 4);
+    j_free(doc);
+    g_free(text);
+    g_free(path);
+    sqlite3_close(other);
+    sqlite3_close(db);
+}
+
+// Marked exports keep their scope.
+static void test_mark_scope(void) {
+    sqlite3 *db = open_case("scope.bec");
+    g_free(put("scope.csv", "IP,Operation\n192.0.2.1,First\n192.0.2.2,Second\n192.0.2.3,Third\n"));
+    CHECK(load(db, "scope.csv", NULL) == IMPORT_DONE);
+    GPtrArray *pairs = g_ptr_array_new();
+    g_ptr_array_add(pairs, "192.0.2.1");
+    g_ptr_array_add(pairs, "");
+    CHECK(assign_verdict(db, "ip", pairs, "Good", NULL));
+    pairs->pdata[0] = "192.0.2.2";
+    CHECK(assign_verdict(db, "ip", pairs, "Bad", NULL));
+    char *scope = g_strdup_printf("markbatch = %" G_GINT64_FORMAT, last_batch(db));
+    CHECK(count(db, scope) == 1 && count(db, "marked = true") == 2);
+    g_free(scope);
+    CHECK(assign_verdict(db, "ip", pairs, "Unmarked", NULL));
+    scope = g_strdup_printf("(markbatch = %" G_GINT64_FORMAT ") AND operation = Second AND verdict = Unmarked", last_batch(db));
+    CHECK(count(db, scope) == 1);
+    g_free(scope);
+    // The filter stops matching afterwards.
+    CHECK(mark_matches(db, 0, "verdict = Unmarked AND operation = Third", "Bad", 0, NULL) == 1);
+    scope = g_strdup_printf("markbatch = %" G_GINT64_FORMAT, last_batch(db));
+    CHECK(count(db, scope) == 1 && count(db, "verdict = Unmarked AND operation = Third") == 0);
+    char *both = g_strconcat(scope, " AND operation = Third AND verdict = Bad", NULL);
+    CHECK(count(db, both) == 1 && count(db, "markbatch = 0") == 0);
+    g_free(both);
+    g_free(scope);
+    g_ptr_array_free(pairs, TRUE);
+    sqlite3_close(db);
+}
+
+static gpointer first_import(gpointer name) {
+    sqlite3 *db = open_case("race.bec");
+    gboolean ok = db && load(db, name, NULL) == IMPORT_DONE;
+    sqlite3_close(db);
+    return GINT_TO_POINTER(ok);
+}
+
+// Two importers create one case.
+static void test_first_imports(void) {
+    char *path = file("race.bec");
+    g_free(put("race-a.csv", "Operation\nA\n"));
+    g_free(put("race-b.csv", "Operation\nB\n"));
+    sqlite3 *lock = NULL;
+    CHECK(sqlite3_open(path, &lock) == SQLITE_OK && sql_run(lock, "BEGIN IMMEDIATE", NULL));
+    GThread *a = g_thread_new("a", first_import, "race-a.csv"), *b = g_thread_new("b", first_import, "race-b.csv");
+    g_usleep(500000);
+    CHECK(sql_run(lock, "ROLLBACK", NULL));
+    sqlite3_close(lock);
+    CHECK(GPOINTER_TO_INT(g_thread_join(a)));
+    CHECK(GPOINTER_TO_INT(g_thread_join(b)));
+    sqlite3 *db = open_case("race.bec");
+    CHECK(count(db, "") == 2 && sql_int(db, "SELECT count(*) FROM files", NULL) == 2);
+    sqlite3_close(db);
+    g_free(path);
+}
+
+// New cases are private.
+static void test_permissions(void) {
+#ifdef G_OS_UNIX
+    mode_t before = umask(022);
+    sqlite3 *db = open_case("private.bec");
+    g_free(put("private.csv", "Operation\nA\n"));
+    CHECK(load(db, "private.csv", NULL) == IMPORT_DONE);
+    static const char *const names[] = {"private.bec", "private.bec-wal", "private.bec-shm"};
+    for (guint i = 0; i < G_N_ELEMENTS(names); i++) {
+        char *path = file(names[i]);
+        GStatBuf info;
+        CHECK(g_stat(path, &info) == 0 && (info.st_mode & 077) == 0);
+        g_free(path);
+    }
+    sqlite3_close(db);
+    // Chosen access is kept.
+    char *path = file("private.bec");
+    CHECK(g_chmod(path, 0640) == 0);
+    db = open_case("private.bec");
+    GStatBuf info;
+    CHECK(g_stat(path, &info) == 0 && (info.st_mode & 0777) == 0640);
+    sqlite3_close(db);
+    g_free(path);
+    umask(before);
+#endif
+}
+
+// Settled cases open in place.
+static void test_read_only(void) {
+#ifdef G_OS_UNIX
+    if (geteuid() == 0)
+        return;
+    char *folder = file("locked"), *path = g_build_filename(folder, "ro.bec", NULL);
+    char *source = put("ro.csv", "Operation\nOne\n");
+    g_mkdir(folder, 0700);
+    GError *error = NULL;
+    sqlite3 *db = case_connect(path, NULL);
+    CHECK(db && import_file(db, source, NULL, NULL, NULL) == IMPORT_DONE);
+    sqlite3_close(db);
+    CHECK(g_chmod(path, 0444) == 0 && g_chmod(folder, 0555) == 0);
+    db = case_connect(path, &error);
+    CHECK(db != NULL);
+    if (db) {
+        CHECK(count(db, "operation = One") == 1);
+        CHECK(mark_matches(db, 0, "operation = One", "Bad", 0, NULL) == -1);
+        GPtrArray *rows = stats_calculate(db, "operations", 0, "", 3600, NULL);
+        CHECK(rows && rows->len == 1);
+        if (rows)
+            g_ptr_array_free(rows, TRUE);
+        sqlite3_close(db);
+    }
+    g_clear_error(&error);
+    db = case_read(path, NULL);
+    CHECK(db && count(db, "") == 1);
+    sqlite3_close(db);
+    GDir *listing = g_dir_open(folder, 0, NULL);
+    g_dir_read_name(listing);
+    CHECK(g_dir_read_name(listing) == NULL);
+    g_dir_close(listing);
+    // Live WAL data is never skipped.
+    CHECK(g_chmod(folder, 0755) == 0 && g_chmod(path, 0644) == 0);
+    sqlite3 *writer = case_connect(path, NULL);
+    g_free(put("ro-more.csv", "Operation\nTwo\n"));
+    CHECK(writer && load(writer, "ro-more.csv", NULL) == IMPORT_DONE);
+    CHECK(g_chmod(path, 0444) == 0 && g_chmod(folder, 0555) == 0);
+    db = case_connect(path, NULL);
+    CHECK(!db || count(db, "") == 2);
+    sqlite3_close(db);
+    CHECK(g_chmod(folder, 0755) == 0 && g_chmod(path, 0644) == 0);
+    sqlite3_close(writer);
+    g_free(source);
+    g_free(folder);
+    g_free(path);
+#endif
+}
+
+// Idle cases copy as one file.
+static void test_copy(void) {
+    sqlite3 *reader = open_case("live.bec"), *writer = open_case("live.bec");
+    g_free(put("live-a.csv", "Operation\nOne\n"));
+    g_free(put("live-b.csv", "Operation\nTwo\n"));
+    CHECK(load(reader, "live-a.csv", NULL) == IMPORT_DONE && count(reader, "") == 1);
+    CHECK(load(writer, "live-b.csv", NULL) == IMPORT_DONE);
+    CHECK(mark_matches(writer, 0, "operation = Two", "Bad", 0, NULL) == 1);
+    char *path = file("live.bec"), *copy = file("handoff.bec"), *bytes = NULL;
+    gsize size = 0;
+    CHECK(g_file_get_contents(path, &bytes, &size, NULL) && g_file_set_contents(copy, bytes, (gssize)size, NULL));
+    sqlite3 *copied = open_case("handoff.bec");
+    CHECK(count(copied, "") == 2 && count(copied, "verdict = Bad AND operation = Two") == 1);
+    CHECK(undo_verdict(writer, NULL));
+    g_free(bytes);
+    CHECK(g_file_get_contents(path, &bytes, &size, NULL));
+    sqlite3_close(copied);
+    CHECK(g_file_set_contents(copy, bytes, (gssize)size, NULL));
+    copied = open_case("handoff.bec");
+    CHECK(count(copied, "") == 2 && count(copied, "marked = true") == 0);
+    sqlite3_close(copied);
+    sqlite3_close(writer);
+    sqlite3_close(reader);
+    g_free(bytes);
+    g_free(path);
+    g_free(copy);
+}
+
+// Rewrites one workbook part.
+static void zip_swap(const char *path, const char *entry, const char *from, const char *to) {
+    zip_t *archive = zip_open(path, 0, NULL);
+    zip_stat_t info;
+    GString *text = g_string_new(NULL);
+    if (archive && from && zip_stat(archive, entry, 0, &info) == 0) {
+        zip_file_t *part = zip_fopen(archive, entry, 0);
+        g_string_set_size(text, info.size);
+        zip_fread(part, text->str, info.size);
+        zip_fclose(part);
+        g_string_replace(text, from, to, 0);
+    } else {
+        g_string_assign(text, to);
+    }
+    gboolean ok = archive && zip_file_add(archive, entry, zip_source_buffer(archive, text->str, text->len, 0), ZIP_FL_OVERWRITE) >= 0;
+    CHECK(ok && zip_close(archive) == 0);
+    g_string_free(text, TRUE);
+}
+
+static void write_cells(lxw_worksheet *sheet, int row, const char *first, const char *second) {
+    worksheet_write_string(sheet, row, 0, first, NULL);
+    if (second)
+        worksheet_write_string(sheet, row, 1, second, NULL);
+}
+
+// Gaps, escapes and relocated sheets.
+static void test_workbooks(void) {
+    sqlite3 *db = open_case("books.bec");
+    char *path = file("gaps.xlsx");
+    lxw_workbook *book = workbook_new(path);
+    lxw_format *bold = workbook_add_format(book);
+    format_set_bold(bold);
+    write_cells(workbook_add_worksheet(book, "Cover"), 0, "Status", NULL);
+    lxw_worksheet *sheet = workbook_add_worksheet(book, "Evidence");
+    write_cells(sheet, 1, "Operation", "Actor");
+    write_cells(sheet, 2, "Send", "a");
+    worksheet_write_blank(sheet, 3, 0, bold);
+    write_cells(sheet, 5, "Delete", "b");
+    write_cells(sheet, 6, "Short", NULL);
+    CHECK(workbook_close(book) == LXW_NO_ERROR);
+    CHECK(load(db, "gaps.xlsx", NULL) == IMPORT_DONE);
+    CHECK(count(db, "sheet = Evidence") == 3 && count(db, "sheet = Cover") == 0);
+    CHECK(count(db, "operation = Send AND row = 3 AND actor = a") == 1 && count(db, "operation = Delete AND row = 6") == 1);
+    CHECK(count(db, "operation = Short AND row = 7 AND issue contains \"Expected 2 fields\"") == 1);
+    CHECK(sql_int(db, "SELECT issues FROM logs WHERE sheet='Evidence'", NULL) == 1);
+    g_free(path);
+    // Only real escapes are decoded.
+    path = file("escapes.xlsx");
+    book = workbook_new(path);
+    sheet = workbook_add_worksheet(book, "Shared");
+    write_cells(sheet, 0, "Operation", "Subject");
+    write_cells(sheet, 1, "Send", "one");
+    write_cells(sheet, 2, "Send", "two");
+    write_cells(workbook_add_worksheet(book, "Inline"), 0, "x", NULL);
+    CHECK(workbook_close(book) == LXW_NO_ERROR);
+    zip_swap(path, "xl/sharedStrings.xml", NULL,
+             "<sst xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><si><t>Operation</t></si>"
+             "<si><t>Subject</t></si><si><t>Send</t></si><si><t>box005F_item</t></si>"
+             "<si><t>a_x005F_x000D_b_x000D_c_x00ZZ_</t></si></sst>");
+    zip_swap(path, "xl/worksheets/sheet2.xml", NULL,
+             "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><sheetData>"
+             "<row r=\"1\"><c r=\"A1\" t=\"inlineStr\"><is><t>Operation</t></is></c>"
+             "<c r=\"B1\" t=\"inlineStr\"><is><t>Subject</t></is></c></row>"
+             "<row r=\"2\"><c r=\"A2\" t=\"inlineStr\"><is><t>Read</t></is></c>"
+             "<c r=\"B2\" t=\"inlineStr\"><is><t>inx005F_line_x005F_</t></is></c></row></sheetData></worksheet>");
+    CHECK(load(db, "escapes.xlsx", NULL) == IMPORT_DONE);
+    CHECK(count(db, "sheet = Shared AND subject = \"box005F_item\"") == 1);
+    CHECK(count(db, "sheet = Shared AND subject = \"a_x000D_b\\rc_x00ZZ_\"") == 1);
+    CHECK(count(db, "sheet = Inline AND subject = \"inx005F_line_\"") == 1);
+    g_free(path);
+    // Relationships locate worksheets.
+    path = file("moved.xlsx");
+    book = workbook_new(path);
+    write_cells(workbook_add_worksheet(book, "One"), 0, "Operation", NULL);
+    sheet = workbook_add_worksheet(book, "Two");
+    write_cells(sheet, 0, "Operation", NULL);
+    write_cells(sheet, 1, "Second", NULL);
+    CHECK(workbook_close(book) == LXW_NO_ERROR);
+    zip_t *archive = zip_open(path, 0, NULL);
+    CHECK(archive && zip_file_rename(archive, (zip_uint64_t)zip_name_locate(archive, "xl/worksheets/sheet2.xml", 0), "xl/logs/data.xml", 0) == 0);
+    CHECK(archive && zip_close(archive) == 0);
+    zip_swap(path, "xl/_rels/workbook.xml.rels", "worksheets/sheet2.xml", "logs/data.xml");
+    zip_swap(path, "[Content_Types].xml", "/xl/worksheets/sheet2.xml", "/xl/logs/data.xml");
+    CHECK(load(db, "moved.xlsx", NULL) == IMPORT_DONE);
+    CHECK(count(db, "file = moved.xlsx AND sheet = Two AND operation = Second") == 1);
+    g_free(path);
+    sqlite3_close(db);
+}
+
+// Timeline exports reimport faithfully.
+static void test_handoff(void) {
+    sqlite3 *db = open_case("handoff-source.bec");
+    g_free(put("verdicts.csv", "Operation,IP\nA,192.0.2.1\nB,192.0.2.2\nC,192.0.2.3\nD,192.0.2.4\n"));
+    CHECK(load(db, "verdicts.csv", NULL) == IMPORT_DONE);
+    CHECK(mark_matches(db, 0, "operation = A", "Good", 0, NULL) == 1 && mark_matches(db, 0, "operation = B", "Bad", 0, NULL) == 1);
+    CHECK(mark_matches(db, 0, "operation = C", "Unsure", 0, NULL) == 1);
+    static const char *const formats[] = {"csv", "xlsx", "json"};
+    for (guint i = 0; i < G_N_ELEMENTS(formats); i++) {
+        char *name = g_strconcat("handoff.", formats[i], NULL), *label = g_strconcat("handoff-", formats[i], ".bec", NULL);
+        CHECK(save(db, name, ""));
+        sqlite3 *fresh = open_case(label);
+        CHECK(load(fresh, name, NULL) == IMPORT_DONE);
+        CHECK(count(fresh, "verdict = Good AND operation = A") == 1 && count(fresh, "verdict = Bad AND operation = B") == 1);
+        CHECK(count(fresh, "verdict = Unsure AND operation = C") == 1 && count(fresh, "verdict = Unmarked AND operation = D") == 1);
+        sqlite3_close(fresh);
+        g_free(name);
+        g_free(label);
+    }
+    sqlite3_close(db);
+    // Every listed address stays searchable.
+    db = open_case("pair-source.bec");
+    g_free(put("pair.csv", "Request ID,IP address,IP address (seen by resource)\nr1,192.0.2.11,192.0.2.12\n"));
+    CHECK(load(db, "pair.csv", NULL) == IMPORT_DONE);
+    for (guint i = 0; i < G_N_ELEMENTS(formats); i++) {
+        char *name = g_strconcat("pair-out.", formats[i], NULL), *label = g_strconcat("pair-", formats[i], ".bec", NULL);
+        CHECK(save(db, name, ""));
+        sqlite3 *fresh = open_case(label);
+        CHECK(load(fresh, name, NULL) == IMPORT_DONE);
+        CHECK(count(fresh, "ip = 192.0.2.11") == 1 && count(fresh, "ip = 192.0.2.12") == 1 && count(fresh, "") == 1);
+        sqlite3_close(fresh);
+        g_free(name);
+        g_free(label);
+    }
+    sqlite3_close(db);
+}
+
+// Group counts equal their drilldowns.
+static gint64 report_total(sqlite3 *db, const char *key, const char *label) {
+    GPtrArray *rows = stats_calculate(db, key, 0, "", 3600, NULL);
+    gint64 total = rows ? 0 : -1;
+    for (guint i = 0; rows && i < rows->len; i++) {
+        StatRow *row = rows->pdata[i];
+        char *drill = stats_drilldown(key, row, 3600);
+        if (count(db, drill) != row->count) {
+            printf("drill %s: %s\n", key, drill);
+            total = -1000000;
+        }
+        if (!label || !strcmp(row->values[0], label))
+            total += row->count;
+        g_free(drill);
+    }
+    if (rows)
+        g_ptr_array_free(rows, TRUE);
+    return total;
+}
+
+// Provider fields feed shared pivots.
+static void test_pivots(void) {
+    sqlite3 *db = open_case("pivots.bec");
+    g_free(put("trace.csv", "Received,SenderAddress,RecipientAddress,FromIP,ToIP,Status\n"
+                            "2026-06-01T12:00:00Z,s@example.org,r@example.org,192.0.2.8,192.0.2.9,Delivered\n"));
+    CHECK(load(db, "trace.csv", NULL) == IMPORT_DONE);
+    CHECK(count(db, "source = \"Exchange trace\" AND ip = 192.0.2.8") == 1 && count(db, "ip = 192.0.2.9") == 1);
+    CHECK(count(db, "field \"/FromIP\" = 192.0.2.8 AND field \"/ToIP\" = 192.0.2.9") == 1);
+    // Directory audits name both sides.
+    g_free(put("audit.json", "[{\"activityDateTime\":\"2026-06-01T00:00:00Z\",\"activityDisplayName\":\"Update user\","
+                             "\"result\":\"success\",\"initiatedBy\":{\"user\":{\"userPrincipalName\":\"admin@example.org\","
+                             "\"ipAddress\":\"192.0.2.1\"}},\"targetResources\":[{\"type\":\"User\",\"id\":\"t-1\","
+                             "\"userPrincipalName\":\"target@example.org\"}]},"
+                             "{\"activityDateTime\":\"2026-06-01T12:00:00Z\",\"activityDisplayName\":\"Consent to application\","
+                             "\"result\":\"success\"}]"));
+    CHECK(load(db, "audit.json", NULL) == IMPORT_DONE);
+    CHECK(count(db, "ip = 192.0.2.1") == 1 && count(db, "target = \"target@example.org\"") == 1);
+    CHECK(count(db, "mailbox = \"target@example.org\"") == 1 && count(db, "target = t-1 AND actor = \"admin@example.org\"") == 1);
+    CHECK(count(db, "actor = \"target@example.org\"") == 0 && count(db, "target = \"admin@example.org\"") == 0);
+    CHECK(report_total(db, "consent", "Consent to application") == 1);
+    // Workload sign-ins have no user.
+    g_free(put("workload.json", "{\"createdDateTime\":\"2026-06-01T12:00:00Z\",\"id\":\"w-1\",\"signInEventTypes\":[\"servicePrincipal\"],"
+                                "\"servicePrincipalName\":\"Audit reader\",\"servicePrincipalId\":\"sp-2\","
+                                "\"appDisplayName\":\"Audit reader\",\"status\":{\"errorCode\":0}}"));
+    CHECK(load(db, "workload.json", NULL) == IMPORT_DONE);
+    CHECK(count(db, "source = \"Graph sign-ins\" AND actor = \"Audit reader\" AND serviceprincipal = sp-2") == 1);
+    CHECK(report_total(db, "outcomes", "Graph sign-ins") == 1);
+    // Each step keeps its outcome.
+    g_free(put("steps.json", "{\"createdDateTime\":\"2026-06-01T12:00:00Z\",\"userPrincipalName\":\"user@example.org\","
+                             "\"status\":{\"errorCode\":0},\"authenticationDetails\":[{\"authenticationMethod\":\"Password\","
+                             "\"succeeded\":true},{\"authenticationMethod\":\"Mobile app notification\",\"succeeded\":false}]}"));
+    g_free(put("InteractiveSignInsAuthDetails.csv", "Request ID,Authentication method,Succeeded\nq1,Password,false\n"));
+    CHECK(load(db, "steps.json", NULL) == IMPORT_DONE && load(db, "InteractiveSignInsAuthDetails.csv", NULL) == IMPORT_DONE);
+    CHECK(count(db, "authmethod = Password") == 2 && count(db, "authmethod = \"Mobile app notification\"") == 1);
+    CHECK(report_total(db, "methods", "Password \xc2\xb7 Succeeded") == 1 && report_total(db, "methods", "Password \xc2\xb7 Failed") == 1);
+    CHECK(report_total(db, "methods", "Mobile app notification \xc2\xb7 Failed") == 1 && report_total(db, "methods", NULL) == 3);
+    sqlite3_close(db);
+}
+
+// Indicators count what they filter.
+static void test_indicators(void) {
+    sqlite3 *db = open_case("indicators.bec");
+    g_free(put("padded-ops.csv", "Operation,Status\nSend,Success\n\" Send \",\" Failure \"\nsendas,FAILED\n"));
+    CHECK(load(db, "padded-ops.csv", NULL) == IMPORT_DONE);
+    CHECK(report_total(db, "indicators", "Messages sent") == 3);
+    CHECK(report_total(db, "indicators", "Failures and interrupted operations") == 2);
+    // Identity case folds beyond ASCII.
+    g_free(put("accents.csv", "Request ID,Username,Status\nr1,\xc3\x89lodie@example.org,Success\nr2,\xc3\xa9lodie@example.org,Success\n"));
+    CHECK(load(db, "accents.csv", NULL) == IMPORT_DONE);
+    CHECK(count(db, "mailbox = \"\xc3\x89LODIE@example.org\"") == 2 && count(db, "mailbox contains \"\xc3\x89LOD\"") == 2);
+    CHECK(count(db, "mailbox != \"\xc3\xa9lodie@example.org\" AND file = accents.csv") == 0);
+    CHECK(report_total(db, "mailboxes", NULL) == 2);
+    // Graph failures name a reason.
+    g_free(put("reasons.json", "[{\"createdDateTime\":\"2026-06-01T12:00:00Z\",\"userPrincipalName\":\"u@example.org\","
+                               "\"status\":{\"errorCode\":50126,\"failureReason\":\"Invalid username or password\"}},"
+                               "{\"createdDateTime\":\"2026-06-01T13:00:00Z\",\"userPrincipalName\":\"u@example.org\","
+                               "\"status\":{\"errorCode\":0}}]"));
+    CHECK(load(db, "reasons.json", NULL) == IMPORT_DONE);
+    CHECK(report_total(db, "indicators", "Failures and interrupted operations") == 3);
+    CHECK(count(db, "result = \"Invalid username or password\" AND field \"/status/errorCode\" = 50126") == 1);
+    CHECK(report_total(db, "outcomes", "Graph sign-ins") == 2);
+    sqlite3_close(db);
+}
+
+// Purview records nest their evidence.
+static void test_purview(void) {
+    sqlite3 *db = open_case("purview.bec");
+    g_free(put("projected.json", "{\"CreationTime\":\"2026-02-01T00:00:00Z\",\"Operation\":\"Send\","
+                                 "\"Item\":{\"Subject\":\"Example\",\"InternetMessageId\":\"<one@example.org>\"}}"));
+    g_free(put("typed.json", "{\"CreationTime\":\"2026-02-01T00:01:00Z\",\"Operation\":\"Send\",\"RecordType\":2,"
+                             "\"Item\":{\"Subject\":\"Typed\"}}"));
+    CHECK(load(db, "projected.json", NULL) == IMPORT_DONE && load(db, "typed.json", NULL) == IMPORT_DONE);
+    CHECK(count(db, "source = \"Purview audit\"") == 2 && count(db, "subject = Example") == 1 && count(db, "subject = Typed") == 1);
+    CHECK(count(db, "messageid = \"<one@example.org>\"") == 1);
+    // One item names its folder.
+    g_free(put("single-item.json", "{\"CreationTime\":\"2026-03-01T00:00:00Z\",\"Operation\":\"MailItemsAccessed\",\"RecordType\":2,"
+                                   "\"UserId\":\"a@example.org\",\"Item\":{\"Id\":\"item-one\",\"ImmutableId\":\"stable-one\","
+                                   "\"ParentFolder\":{\"Name\":\"Inbox\",\"Path\":\"/Inbox\"}}}"));
+    g_free(put("listed-items.json", "{\"CreationTime\":\"2026-03-01T03:00:00Z\",\"Operation\":\"MailItemsAccessed\",\"RecordType\":2,"
+                                    "\"UserId\":\"a@example.org\",\"Folders\":[{\"Path\":\"/Sent\","
+                                    "\"FolderItems\":[{\"ImmutableId\":\"stable-control\"}]}]}"));
+    g_free(put("single-item.csv", "CreationDate,Operation,AuditData\n2026-03-01T00:00:00Z,MailItemsAccessed,"
+                                  "\"{\"\"Operation\"\":\"\"MailItemsAccessed\"\",\"\"Item\"\":{\"\"Id\"\":\"\"csv-one\"\","
+                                  "\"\"ParentFolder\"\":{\"\"Path\"\":\"\"/Archive\"\"}}}\"\n"));
+    CHECK(load(db, "single-item.json", NULL) == IMPORT_DONE && load(db, "listed-items.json", NULL) == IMPORT_DONE);
+    CHECK(load(db, "single-item.csv", NULL) == IMPORT_DONE);
+    CHECK(count(db, "mailitem = stable-one") == 1 && count(db, "folder = \"/Inbox\"") == 1);
+    CHECK(count(db, "mailitem = stable-control") == 1 && count(db, "folder = \"/Sent\"") == 1);
+    CHECK(count(db, "mailitem = csv-one") == 1 && count(db, "folder = \"/Archive\"") == 1);
+    CHECK(report_total(db, "items", "stable-one") == 1 && report_total(db, "folders", "/Inbox") == 1);
+    // One deletion affects several messages.
+    g_free(put("deleted.json", "{\"CreationTime\":\"2026-03-01T01:00:00Z\",\"Operation\":\"SoftDelete\",\"RecordType\":3,"
+                               "\"UserId\":\"a@example.org\",\"AffectedItems\":[{\"Id\":\"item-two\","
+                               "\"InternetMessageId\":\"<msg-two@example.org>\",\"Subject\":\"Status update\","
+                               "\"ParentFolder\":{\"Path\":\"/Drafts\"}},{\"Id\":\"item-three\",\"Subject\":\"Other\"}]}"));
+    CHECK(load(db, "deleted.json", NULL) == IMPORT_DONE);
+    CHECK(count(db, "operation = SoftDelete AND messageid = \"<msg-two@example.org>\" AND subject = \"Status update\"") == 1);
+    CHECK(count(db, "operation = SoftDelete AND subject = Other AND mailitem = item-three AND folder = \"/Drafts\"") == 1);
+    CHECK(count(db, "subject = \"Status update\"") == 1 && count(db, "mailitem = \"<msg-two@example.org>\"") == 1);
+    // Recipients are mailboxes too.
+    g_free(put("sent.json", "{\"CreationTime\":\"2026-03-01T02:00:00Z\",\"Operation\":\"Send\",\"RecordType\":2,"
+                            "\"UserId\":\"a@example.org\",\"Item\":{\"Recipients\":[{\"Address\":\"team@example.org\","
+                            "\"Name\":\"Team\"},\"plain@example.org\"]}}"));
+    g_free(put("sent.csv", "CreationDate,Operation,AuditData\n2026-03-01T02:00:00Z,Send,\"{\"\"Operation\"\":\"\"Send\"\","
+                           "\"\"UserId\"\":\"\"b@example.org\"\",\"\"Item\"\":{\"\"Recipients\"\":[{\"\"Address\"\":\"\"csv-team@example.org\"\"}]}}\"\n"));
+    CHECK(load(db, "sent.json", NULL) == IMPORT_DONE && load(db, "sent.csv", NULL) == IMPORT_DONE);
+    CHECK(count(db, "recipient = \"team@example.org\" AND mailbox = \"team@example.org\" AND actor = \"a@example.org\"") == 1);
+    CHECK(count(db, "mailbox = \"plain@example.org\"") == 1 && count(db, "mailbox = \"csv-team@example.org\"") == 1);
+    CHECK(count(db, "actor = \"team@example.org\"") == 0 && report_total(db, "mailboxes", "team@example.org") == 1);
+    sqlite3_close(db);
+}
+
+// Odd JSON values stay usable.
+static void test_json_values(void) {
+    sqlite3 *db = open_case("values.bec");
+    g_free(put("nul.json", "{\"Operation\":\"Send\",\"CreationTime\":\"2026-06-01T00:00:00Z\",\"Note\":\"before\\u0000after\","
+                           "\"Item\":{\"Subject\":\"top\\u0000secret\"}}"));
+    CHECK(load(db, "nul.json", NULL) == IMPORT_DONE);
+    CHECK(count(db, "field \"/Note\" contains after") == 1 && count(db, "field \"/Note\" contains before") == 1);
+    CHECK(count(db, "field \"/Note\" = \"before\xef\xbf\xbd" "after\"") == 1 && count(db, "subject contains secret") == 1);
+    CHECK(save(db, "nul-out.json", ""));
+    char *path = file("nul-out.json"), *text = slurp(path);
+    CHECK(strstr(text, "\"Note\":\"before\\u0000after\""));
+    g_free(text);
+    g_free(path);
+    // Only standard numbers import.
+    static const char *const tokens[] = {"NaN", "Infinity", "-Infinity"};
+    for (guint i = 0; i < G_N_ELEMENTS(tokens); i++) {
+        char *body = g_strdup_printf("[{\"Operation\":\"Send\",\"Duration\":%s}]", tokens[i]), *message = NULL;
+        g_free(put("numbers.json", body));
+        CHECK(load(db, "numbers.json", &message) == IMPORT_FAILED && strstr(message, "NaN or Infinity"));
+        g_free(message);
+        g_free(body);
+    }
+    g_free(put("finite.json", "[{\"Operation\":\"Timed\",\"Duration\":1.50,\"Big\":1e400}]"));
+    CHECK(load(db, "finite.json", NULL) == IMPORT_DONE && save(db, "finite-out.json", "operation = Timed"));
+    path = file("finite-out.json");
+    text = slurp(path);
+    CHECK(strstr(text, "\"Duration\":1.50,\"Big\":1e400") && j_parse(text, -1, J_STRICT_KEYS, NULL));
+    g_free(text);
+    g_free(path);
+    // Stored NaN exports as text.
+    JDoc *legacy = j_parse("[NaN,-Infinity,2.5]", -1, 0, NULL);
+    GString *dumped = g_string_new(NULL);
+    j_dump(dumped, legacy->root, J_RAW_NUMBERS);
+    CHECK(!strcmp(dumped->str, "[\"NaN\",\"-Infinity\",2.5]"));
+    CHECK(count(db, "field \"/Duration\" = 1.5") == 1);
+    g_string_free(dumped, TRUE);
+    j_free(legacy);
+    sqlite3_close(db);
+}
+
+// JSON handoffs keep named fields.
+static void test_json_handoff(void) {
+    sqlite3 *db = open_case("purview.bec"), *fresh = open_case("purview-again.bec");
+    CHECK(mark_matches(db, 0, "file = sent.json", "Bad", 0, NULL) == 1);
+    CHECK(save(db, "purview-out.json", ""));
+    CHECK(load(fresh, "purview-out.json", NULL) == IMPORT_DONE);
+    static const char *const filters[] = {
+        "recipient = \"team@example.org\"", "mailbox = \"team@example.org\"", "subject = \"Status update\"",
+        "mailitem = stable-control", "mailitem = stable-one", "folder = \"/Inbox\"", "folder = \"/Archive\"",
+        "messageid = \"<msg-two@example.org>\"", "mailbox = \"csv-team@example.org\"", "recipient = \"csv-team@example.org\"",
+        "verdict = Bad", "subject = Example", "source = \"Purview audit\"", "mailbox = \"a@example.org\""};
+    for (guint i = 0; i < G_N_ELEMENTS(filters); i++) {
+        if (count(db, filters[i]) != count(fresh, filters[i]) || !count(db, filters[i]))
+            printf("handoff %s\n", filters[i]);
+        CHECK(count(db, filters[i]) > 0 && count(db, filters[i]) == count(fresh, filters[i]));
+    }
+    CHECK(report_total(fresh, "items", NULL) == report_total(db, "items", NULL));
+    CHECK(report_total(fresh, "conversations", NULL) == report_total(db, "conversations", NULL));
+    sqlite3_close(fresh);
+    sqlite3_close(db);
+}
+
+// Ticks order events within microseconds.
+static void test_ticks(void) {
+    sqlite3 *db = open_case("ticks.bec");
+    g_free(put("ticks.csv", "Date (UTC),Operation\n2026-02-01T01:00:00.1234569Z,Later\n2026-02-01T01:00:00.1234561Z,Earlier\n"
+                            "2026-02-01T01:00:00.12345Z,Short\n"));
+    CHECK(load(db, "ticks.csv", NULL) == IMPORT_DONE);
+    char *first = text_of(db, "SELECT e.op FROM events e JOIN timeline_ids t ON t.event=e.id WHERE t.number=2");
+    CHECK(!strcmp(first, "Earlier"));
+    g_free(first);
+    CHECK(count(db, "time = \"2026-02-01T01:00:00.1234561Z\"") == 1 && count(db, "time = \"2026-02-01T01:00:00.1234500Z\"") == 1);
+    CHECK(count(db, "time >= \"2026-02-01T01:00:00.1234569Z\"") == 1 && count(db, "time < \"2026-02-01T01:00:00.1234569Z\"") == 2);
+    CHECK(count(db, "time > \"2026-02-01T01:00:00.123456Z\" AND time <= \"2026-02-01T01:00:00.1234561Z\"") == 1);
+    // Labels survive unrepresentable times.
+    char *limit = utc_from_epoch(253402300800), *blank = utc_label(limit, TRUE), *none = utc_label(NULL, FALSE);
+    char *usual = utc_from_epoch(1767355200), *label = utc_label(usual, TRUE), *whole = utc_label(usual, FALSE);
+    CHECK(!*limit && !*blank && !*none && !strcmp(label, "2026-01-02 12:00") && !strcmp(whole, "2026-01-02 12:00:00Z"));
+    g_free(limit);
+    g_free(blank);
+    g_free(none);
+    g_free(usual);
+    g_free(label);
+    g_free(whole);
+    char *next = utc_after("2026-02-01T01:00:00.1234561Z"), *zone = utc_normalize("2026-02-01T03:00:00.1234561+02:00");
+    CHECK(!strcmp(next, "2026-02-01T01:00:00.1234562Z") && !strcmp(zone, "2026-02-01T01:00:00.1234561Z"));
+    g_free(next);
+    g_free(zone);
+    // Older cases widen on opening.
+    GPtrArray *pairs = g_ptr_array_new();
+    g_ptr_array_add(pairs, "2026-02-01T01:00:00.123456Z");
+    g_ptr_array_add(pairs, "2026-02-01T01:00:00.123457Z");
+    CHECK(assign_verdict(db, "time", pairs, "Bad", NULL));
+    g_ptr_array_free(pairs, TRUE);
+    CHECK(sql_run(db, "UPDATE events SET time=substr(time,1,26)||'Z'", NULL) && sql_run(db, "PRAGMA user_version=2", NULL));
+    sqlite3_close(db);
+    db = open_case("ticks.bec");
+    CHECK(sql_int(db, "PRAGMA user_version", NULL) == 3 && sql_int(db, "SELECT count(*) FROM events WHERE length(time)!=28", NULL) == 0);
+    CHECK(count(db, "time = \"2026-02-01T01:00:00.123456Z\"") == 2 && count(db, "verdict = Bad") == 2);
+    CHECK(count(db, "time = \"2026-02-01T01:00:00.12345Z\" AND verdict = Unmarked") == 1);
+    sqlite3_close(db);
+}
+
+// Workbooks reach non-ASCII folders.
+static void test_unicode_folder(void) {
+    sqlite3 *db = open_case("unicode.bec");
+    g_free(put("unicode.csv", "Operation\nOne\n"));
+    CHECK(load(db, "unicode.csv", NULL) == IMPORT_DONE);
+    char *folder = file("case folder \xe6\x9d\xb1"), *book = g_build_filename(folder, "\xe6\x9d\xb1.xlsx", NULL);
+    g_mkdir(folder, 0700);
+    gint64 written = 0;
+    GError *error = NULL;
+    CHECK(export_events(db, book, 0, "", FALSE, "time", NULL, &written, &error) && written == 1);
+    if (error)
+        printf("unicode export: %s\n", error->message);
+    g_clear_error(&error);
+    sqlite3 *fresh = open_case("unicode-again.bec");
+    CHECK(import_file(fresh, book, NULL, NULL, NULL) == IMPORT_DONE && count(fresh, "operation = One") == 1);
+    GDir *listing = g_dir_open(folder, 0, NULL);
+    CHECK(listing && g_dir_read_name(listing) && !g_dir_read_name(listing));
+    g_dir_close(listing);
+    sqlite3_close(fresh);
+    sqlite3_close(db);
+    g_free(folder);
+    g_free(book);
+}
+
 int main(void) {
     root = g_dir_make_tmp("bec-test-XXXXXX", NULL);
     test_text();
@@ -384,6 +1009,22 @@ int main(void) {
     test_json();
     test_statistics();
     test_consistency();
+    test_aliases();
+    test_export_count();
+    test_mark_scope();
+    test_first_imports();
+    test_permissions();
+    test_read_only();
+    test_copy();
+    test_workbooks();
+    test_handoff();
+    test_pivots();
+    test_indicators();
+    test_purview();
+    test_json_values();
+    test_json_handoff();
+    test_ticks();
+    test_unicode_folder();
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

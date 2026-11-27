@@ -21,7 +21,8 @@ gboolean contains_folded(const char *haystack, const char *folded_needle);
 gboolean equals_folded(const char *value, const char *folded_needle);
 char *utc_normalize(const char *value);
 char *utc_from_epoch(gint64 seconds);
-char *utc_add_microsecond(const char *stamp);
+char *utc_label(const char *stamp, gboolean minutes);
+char *utc_after(const char *stamp);
 char *ip_normalize(const char *value);
 char *group_digits(gint64 value);
 
@@ -60,6 +61,7 @@ char *j_number_text(const JV *number);
 char *py_float_repr(double value);
 char *j_text(const JV *value, gboolean json_booleans);
 char *j_scalar(const JV *value);
+char *j_string(const JV *value);
 // Decode embedded JSON cells.
 const JV *j_decode(JDoc *doc, const JV *value);
 gboolean j_row_strings(const char *raw, const int *indexes, guint count, guint width, gboolean strict, GPtrArray *out);
@@ -82,16 +84,20 @@ Columns *columns_new(const char *headers_json);
 void columns_free(Columns *columns);
 GArray *columns_get(const Columns *columns, const char *name);
 gboolean columns_support(const Columns *columns, const char *field);
-typedef struct {
+typedef struct EventFields EventFields;
+struct EventFields {
     Columns *columns;
     gboolean own_columns;
     JDoc *row;
     JDoc *audit_doc;
     const JV *audit;
-} EventFields;
+    EventFields *inner;
+    gboolean unwrapped;
+};
 EventFields *event_fields_new(const char *headers, const char *raw);
 void event_fields_free(EventFields *fields);
 GPtrArray *event_values(EventFields *fields, const char *field);
+GPtrArray *record_values(const JV *record, const char *field);
 GPtrArray *pointer_values(Columns *columns, const char *raw, const char *pointer, gboolean presence);
 char *escape_pointer(const char *key);
 void register_functions(sqlite3 *db);
@@ -126,11 +132,13 @@ char *bql_field_list(void);
 extern const char *const VERDICTS[4];
 sqlite3 *case_connect(const char *path, GError **error);
 sqlite3 *case_read(const char *path, GError **error);
+void case_settle(sqlite3 *db);
 gboolean sql_run(sqlite3 *db, const char *sql, GError **error);
 gint64 sql_int(sqlite3 *db, const char *sql, GError **error);
 sqlite3_stmt *sql_prepare(sqlite3 *db, const char *sql, GError **error);
 gboolean assign_verdict(sqlite3 *db, const char *kind, GPtrArray *pairs, const char *verdict, GError **error);
 gint64 mark_matches(sqlite3 *db, gint64 log, const char *query, const char *verdict, gint64 limit, GError **error);
+gint64 last_batch(sqlite3 *db);
 gboolean undo_verdict(sqlite3 *db, GError **error);
 typedef struct {
     char *label;
@@ -142,6 +150,7 @@ char *where_sql(gint64 log, const char *query, GPtrArray *args, GError **error);
 sqlite3_stmt *query_rows(sqlite3 *db, gint64 log, const char *query, gboolean descending, const char *order_by,
                          GPtrArray *custom, GError **error);
 gint64 count_rows(sqlite3 *db, gint64 log, const char *query, GError **error);
+gboolean same_file(const char *left, const char *right);
 gboolean guard_destination(sqlite3 *db, const char *destination, GError **error);
 char *absolute_path(const char *path);
 const char *column_text(sqlite3_stmt *statement, int index);

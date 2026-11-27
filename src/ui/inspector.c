@@ -9,6 +9,7 @@ typedef struct {
     const JV *value;
     char *pointer;
     char *header;
+    guint position;
 } Source;
 
 typedef struct {
@@ -614,6 +615,7 @@ void inspector_set(Inspector *in, sqlite3 *db, const Record *record) {
         source->label = total > 1 ? g_strdup_printf("%s [%u]", header, ordinal) : g_strdup(header);
         source->header = i < width ? g_strdup(header) : NULL;
         source->value = i < values ? row->u.a[i] : NULL;
+        source->position = i;
         if (i < MIN(width, values)) {
             char *head = total > 1 || occurrence_prefix(header) ? g_strdup_printf("@%u:%s", ordinal, header) : g_strdup(header);
             char *escaped = escape_pointer(head);
@@ -1027,12 +1029,14 @@ static char *text_predicate(Inspector *in, GtkTextIter *spot) {
             }
         }
         g_free(prefix);
-        // Columns map onto sources.
+        // Cells keep original header positions.
         Source *source = NULL;
         for (guint i = 0; i < in->sources->len; i++) {
             Source *candidate = in->sources->pdata[i];
-            if (candidate->pointer && (int)i == column)
+            if (candidate->pointer && candidate->position == (guint)column) {
                 source = candidate;
+                index = (int)i;
+            }
         }
         if (row > 1 || !source)
             return NULL;
@@ -1042,7 +1046,6 @@ static char *text_predicate(Inspector *in, GtkTextIter *spot) {
             g_free(quoted_pointer);
             return out;
         }
-        index = column;
     }
     Source *source = in->sources->pdata[index];
     if (!source->pointer || !source->value)
