@@ -24,6 +24,7 @@ typedef struct {
     GPtrArray *sheet_names;
     GPtrArray *sheet_ids;
     GHashTable *targets;
+    GHashTable *kinds;
     gboolean relations_office;
     char *workbook_path;
     // Worksheet state follows.
@@ -113,6 +114,8 @@ static void relation_start(void *user, const XML_Char *name, const XML_Char **at
             book->workbook_path = g_strdup(target[0] == '/' ? target + 1 : target);
     } else {
         g_hash_table_insert(book->targets, g_strdup(id), g_strdup(target));
+        if (type)
+            g_hash_table_insert(book->kinds, g_strdup(id), g_strdup(type));
     }
 }
 
@@ -547,6 +550,7 @@ gboolean xlsx_read(const char *data, gsize length, const RowSink *sink, GError *
     book.sheet_names = g_ptr_array_new_with_free_func(g_free);
     book.sheet_ids = g_ptr_array_new_with_free_func(g_free);
     book.targets = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+    book.kinds = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
     book.row = g_ptr_array_new_with_free_func(g_free);
     book.value = g_string_new(NULL);
     book.formula = g_string_new(NULL);
@@ -578,9 +582,11 @@ gboolean xlsx_read(const char *data, gsize length, const RowSink *sink, GError *
     char *strings_path = NULL, *styles_path = NULL;
     g_hash_table_iter_init(&iter, book.targets);
     while (g_hash_table_iter_next(&iter, &key, &target)) {
-        if (g_str_has_suffix(target, "sharedStrings.xml"))
+        // Types outrank part names.
+        const char *type = g_hash_table_lookup(book.kinds, key);
+        if (type ? g_str_has_suffix(type, "/sharedStrings") : g_str_has_suffix(target, "sharedStrings.xml"))
             strings_path = join_target(book.workbook_path, target);
-        else if (g_str_has_suffix(target, "styles.xml"))
+        else if (type ? g_str_has_suffix(type, "/styles") : g_str_has_suffix(target, "styles.xml"))
             styles_path = join_target(book.workbook_path, target);
     }
     if (ok && strings_path && zip_name_locate(archive, strings_path, 0) >= 0)
@@ -590,7 +596,8 @@ gboolean xlsx_read(const char *data, gsize length, const RowSink *sink, GError *
         ok = parse_entry(&book, styles_path, styles_start, styles_end);
     for (guint i = 0; ok && i < book.sheet_names->len; i++) {
         const char *relation = g_hash_table_lookup(book.targets, book.sheet_ids->pdata[i]);
-        if (!relation || !strstr(relation, "worksheets/"))
+        const char *type = g_hash_table_lookup(book.kinds, book.sheet_ids->pdata[i]);
+        if (!relation || !(type ? g_str_has_suffix(type, "/worksheet") : strstr(relation, "worksheets/") != NULL))
             continue;
         char *path = join_target(book.workbook_path, relation);
         book.row_number = book.emitted = 0;
@@ -612,6 +619,7 @@ gboolean xlsx_read(const char *data, gsize length, const RowSink *sink, GError *
     g_ptr_array_free(book.sheet_names, TRUE);
     g_ptr_array_free(book.sheet_ids, TRUE);
     g_hash_table_destroy(book.targets);
+    g_hash_table_destroy(book.kinds);
     g_ptr_array_free(book.row, TRUE);
     g_string_free(book.value, TRUE);
     g_string_free(book.formula, TRUE);

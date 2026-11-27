@@ -640,7 +640,7 @@ static void write_cells(lxw_worksheet *sheet, int row, const char *first, const 
         worksheet_write_string(sheet, row, 1, second, NULL);
 }
 
-// Gaps and escaped text.
+// Gaps, escapes and relocated sheets.
 static void test_workbooks(void) {
     sqlite3 *db = open_case("books.bec");
     char *path = file("gaps.xlsx");
@@ -684,6 +684,22 @@ static void test_workbooks(void) {
     CHECK(count(db, "sheet = Shared AND subject = \"box005F_item\"") == 1);
     CHECK(count(db, "sheet = Shared AND subject = \"a_x000D_b\\rc_x00ZZ_\"") == 1);
     CHECK(count(db, "sheet = Inline AND subject = \"inx005F_line_\"") == 1);
+    g_free(path);
+    // Relationships locate worksheets.
+    path = file("moved.xlsx");
+    book = workbook_new(path);
+    write_cells(workbook_add_worksheet(book, "One"), 0, "Operation", NULL);
+    sheet = workbook_add_worksheet(book, "Two");
+    write_cells(sheet, 0, "Operation", NULL);
+    write_cells(sheet, 1, "Second", NULL);
+    CHECK(workbook_close(book) == LXW_NO_ERROR);
+    zip_t *archive = zip_open(path, 0, NULL);
+    CHECK(archive && zip_file_rename(archive, (zip_uint64_t)zip_name_locate(archive, "xl/worksheets/sheet2.xml", 0), "xl/logs/data.xml", 0) == 0);
+    CHECK(archive && zip_close(archive) == 0);
+    zip_swap(path, "xl/_rels/workbook.xml.rels", "worksheets/sheet2.xml", "logs/data.xml");
+    zip_swap(path, "[Content_Types].xml", "/xl/worksheets/sheet2.xml", "/xl/logs/data.xml");
+    CHECK(load(db, "moved.xlsx", NULL) == IMPORT_DONE);
+    CHECK(count(db, "file = moved.xlsx AND sheet = Two AND operation = Second") == 1);
     g_free(path);
     sqlite3_close(db);
 }
