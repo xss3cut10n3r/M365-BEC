@@ -35,7 +35,7 @@ int main(int argc, char **argv) {
     GOptionEntry entries[] = {
         {"case", 0, 0, G_OPTION_ARG_FILENAME, &options.case_path, "Case file to open or create", "CASE.bec"},
         {"filter", 0, 0, G_OPTION_ARG_STRING, &options.filter, "Initial BQL display filter", "BQL"},
-        {"export", 0, 0, G_OPTION_ARG_FILENAME, &options.export_path, "Export matches as CSV, XLSX or JSON, then exit",
+        {"export", 0, 0, G_OPTION_ARG_FILENAME, &options.export_path, "Export matches, or the events --mark changed, as CSV, XLSX or JSON, then exit",
          "FILE"},
         {"log", 0, 0, G_OPTION_ARG_INT64, &options.log, "Limit --export to one log ID", "ID"},
         {"mark", 0, 0, G_OPTION_ARG_STRING, &options.mark, "Mark --filter matches or --mark-ip addresses, then exit",

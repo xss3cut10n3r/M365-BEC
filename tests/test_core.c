@@ -452,6 +452,36 @@ static void test_export_count(void) {
     sqlite3_close(db);
 }
 
+// Marked exports keep their scope.
+static void test_mark_scope(void) {
+    sqlite3 *db = open_case("scope.bec");
+    g_free(put("scope.csv", "IP,Operation\n192.0.2.1,First\n192.0.2.2,Second\n192.0.2.3,Third\n"));
+    CHECK(load(db, "scope.csv", NULL) == IMPORT_DONE);
+    GPtrArray *pairs = g_ptr_array_new();
+    g_ptr_array_add(pairs, "192.0.2.1");
+    g_ptr_array_add(pairs, "");
+    CHECK(assign_verdict(db, "ip", pairs, "Good", NULL));
+    pairs->pdata[0] = "192.0.2.2";
+    CHECK(assign_verdict(db, "ip", pairs, "Bad", NULL));
+    char *scope = g_strdup_printf("markbatch = %" G_GINT64_FORMAT, last_batch(db));
+    CHECK(count(db, scope) == 1 && count(db, "marked = true") == 2);
+    g_free(scope);
+    CHECK(assign_verdict(db, "ip", pairs, "Unmarked", NULL));
+    scope = g_strdup_printf("(markbatch = %" G_GINT64_FORMAT ") AND operation = Second AND verdict = Unmarked", last_batch(db));
+    CHECK(count(db, scope) == 1);
+    g_free(scope);
+    // The filter stops matching afterwards.
+    CHECK(mark_matches(db, 0, "verdict = Unmarked AND operation = Third", "Bad", 0, NULL) == 1);
+    scope = g_strdup_printf("markbatch = %" G_GINT64_FORMAT, last_batch(db));
+    CHECK(count(db, scope) == 1 && count(db, "verdict = Unmarked AND operation = Third") == 0);
+    char *both = g_strconcat(scope, " AND operation = Third AND verdict = Bad", NULL);
+    CHECK(count(db, both) == 1 && count(db, "markbatch = 0") == 0);
+    g_free(both);
+    g_free(scope);
+    g_ptr_array_free(pairs, TRUE);
+    sqlite3_close(db);
+}
+
 int main(void) {
     root = g_dir_make_tmp("bec-test-XXXXXX", NULL);
     test_text();
@@ -461,6 +491,7 @@ int main(void) {
     test_consistency();
     test_aliases();
     test_export_count();
+    test_mark_scope();
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

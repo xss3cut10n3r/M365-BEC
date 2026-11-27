@@ -131,6 +131,7 @@ gint64 sql_int(sqlite3 *db, const char *sql, GError **error);
 sqlite3_stmt *sql_prepare(sqlite3 *db, const char *sql, GError **error);
 gboolean assign_verdict(sqlite3 *db, const char *kind, GPtrArray *pairs, const char *verdict, GError **error);
 gint64 mark_matches(sqlite3 *db, gint64 log, const char *query, const char *verdict, gint64 limit, GError **error);
+gint64 last_batch(sqlite3 *db);
 gboolean undo_verdict(sqlite3 *db, GError **error);
 typedef struct {
     char *label;

@@ -266,6 +266,12 @@ gint64 mark_matches(sqlite3 *db, gint64 log, const char *query, const char *verd
     return sql_run(db, "COMMIT", error) ? count : -1;
 }
 
+// Valid right after marking.
+gint64 last_batch(sqlite3 *db) {
+    gint64 batch = sql_int(db, "SELECT batch FROM verdict_rules WHERE id=last_insert_rowid()", NULL);
+    return batch > 0 ? batch : 0;
+}
+
 gboolean undo_verdict(sqlite3 *db, GError **error) {
     if (!sql_run(db, "BEGIN IMMEDIATE", error))
         return FALSE;
