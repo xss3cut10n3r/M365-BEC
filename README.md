@@ -30,7 +30,11 @@ The **Help** menu lists every filter field. **Statistics** breaks events down by
 M365-BEC --case case.bec logs.csv signins.json
 M365-BEC --case case.bec --filter "ip = 203.0.113.7" --export hits.json
 M365-BEC --no-gui --case case.bec logs.xlsx
+M365-BEC --case case.bec --mark bad --mark-ip 203.0.113.7
+M365-BEC --case case.bec --mark good --filter "operation = \"Disable-InboxRule\""
 ```
+
+`--mark` takes `good`, `bad`, `unsure`, or `clear`. Excel exports colour each row by its mark.
 
 ## Build
 

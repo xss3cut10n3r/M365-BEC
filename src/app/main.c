@@ -38,6 +38,9 @@ int main(int argc, char **argv) {
         {"export", 0, 0, G_OPTION_ARG_FILENAME, &options.export_path, "Export matches as CSV, XLSX or JSON, then exit",
          "FILE"},
         {"log", 0, 0, G_OPTION_ARG_INT64, &options.log, "Limit --export to one log ID", "ID"},
+        {"mark", 0, 0, G_OPTION_ARG_STRING, &options.mark, "Mark --filter matches or --mark-ip addresses, then exit",
+         "good|bad|unsure|clear"},
+        {"mark-ip", 0, 0, G_OPTION_ARG_STRING_ARRAY, &options.mark_ips, "Mark every event from this IP (repeatable)", "IP"},
         {"no-gui", 0, 0, G_OPTION_ARG_NONE, &options.headless, "Import files into the case, then exit", NULL},
         {G_OPTION_REMAINING, 0, 0, G_OPTION_ARG_FILENAME_ARRAY, &options.files, NULL, "[CSV, XLSX or JSON logs...]"},
         {NULL},
@@ -63,7 +66,7 @@ int main(int argc, char **argv) {
         return 2;
     }
     g_option_context_free(context);
-    if (options.export_path || options.headless) {
+    if (options.export_path || options.headless || options.mark) {
         cli_console();
         return cli_run(&options);
     }

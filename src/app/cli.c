@@ -28,10 +28,48 @@ static void progress(const char *message, gpointer user) {
     fprintf(stderr, "%s\n", message);
 }
 
+// Applies command-line verdicts.
+static int cli_mark(sqlite3 *db, const Options *options) {
+    static const char *const words[][2] = {{"good", "Good"}, {"bad", "Bad"}, {"unsure", "Unsure"}, {"clear", "Unmarked"}};
+    const char *verdict = NULL;
+    for (guint i = 0; i < G_N_ELEMENTS(words); i++)
+        if (!g_ascii_strcasecmp(options->mark, words[i][0]))
+            verdict = words[i][1];
+    gboolean ips = options->mark_ips && options->mark_ips[0];
+    if (!verdict || (!ips && !(options->filter && *options->filter))) {
+        fprintf(stderr, "Use --mark good|bad|unsure|clear with --filter BQL or --mark-ip IP.\n");
+        return 2;
+    }
+    GError *error = NULL;
+    if (ips) {
+        GPtrArray *pairs = g_ptr_array_new_with_free_func(g_free);
+        for (char **ip = options->mark_ips; *ip && !error; ip++) {
+            char *address = ip_normalize(*ip);
+            if (!*address)
+                bec_fail(&error, "Invalid IP address: %s", *ip);
+            g_ptr_array_add(pairs, address);
+            g_ptr_array_add(pairs, g_strdup(""));
+        }
+        if (!error && assign_verdict(db, "ip", pairs, verdict, &error))
+            printf("Marked %u IP addresses %s\n", pairs->len / 2, verdict);
+        g_ptr_array_free(pairs, TRUE);
+    } else {
+        gint64 count = mark_matches(db, options->log, options->filter, verdict, 0, &error);
+        if (!error)
+            printf("Marked %" G_GINT64_FORMAT " events %s\n", count, verdict);
+    }
+    if (error) {
+        fprintf(stderr, "%s\n", error->message);
+        g_clear_error(&error);
+        return 1;
+    }
+    return 0;
+}
+
 // Import and export without windows.
 int cli_run(const Options *options) {
     if (!options->case_path) {
-        fprintf(stderr, "Use --case CASE.bec with --export or --no-gui.\n");
+        fprintf(stderr, "Use --case CASE.bec with --export, --mark or --no-gui.\n");
         return 2;
     }
     GError *error = NULL;
@@ -60,6 +98,17 @@ int cli_run(const Options *options) {
         fprintf(stderr, "Warning %s: %s\n", column_text(warnings, 0), column_text(warnings, 1));
     sqlite3_finalize(warnings);
     const char *filter = options->filter ? options->filter : "";
+    if (options->mark) {
+        int marked = cli_mark(db, options);
+        if (marked || !options->export_path) {
+            sqlite3_close(db);
+            fflush(stdout);
+            return status ? status : marked;
+        }
+        // IP marks export everything.
+        if (options->mark_ips && options->mark_ips[0] && !options->filter)
+            filter = "marked = true";
+    }
     if (options->export_path) {
         if (export_events(db, options->export_path, options->log, filter, FALSE, "time", NULL, &error)) {
             gint64 count = count_rows(db, options->log, filter, NULL);

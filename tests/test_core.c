@@ -161,6 +161,26 @@ static void test_tabular(void) {
     CHECK(undo_verdict(db, NULL));
     CHECK(count(db, "marked = true") == 0);
     g_ptr_array_free(pairs, TRUE);
+    // Empty paths match nothing.
+    CHECK(count(db, "exists \"/\"") == 0 && count(db, "field \"/\" = \"x\"") == 0);
+    CHECK(count(db, "field \"//\" contains \"x\"") == 0 && count(db, "exists \"/~\"") == 0);
+    // Filters mark matching events.
+    GError *failed = NULL;
+    gint64 every = count(db, "");
+    gint64 hits = count(db, "ip = 203.0.113.7");
+    CHECK(hits > 0 && mark_matches(db, 0, "ip = 203.0.113.7", "Unsure", 0, NULL) == hits);
+    CHECK(count(db, "verdict = Unsure AND markreason = Event") == hits);
+    CHECK(mark_matches(db, 0, "", "Good", 1, &failed) == -1 && failed != NULL);
+    g_clear_error(&failed);
+    CHECK(mark_matches(db, 0, "madeup = 1", "Good", 0, &failed) == -1);
+    CHECK(failed && strstr(failed->message, "Fields: ") && strstr(failed->message, "mailbox"));
+    g_clear_error(&failed);
+    CHECK(mark_matches(db, 0, "ip = 198.51.100.250", "Bad", 0, NULL) == 0);
+    CHECK(mark_matches(db, 0, "marked = true", "Bad", 0, NULL) == hits);
+    CHECK(count(db, "verdict = Bad") == hits && count(db, "verdict = Unsure") == 0);
+    CHECK(save(db, "tinted.xlsx", "marked = true"));
+    CHECK(undo_verdict(db, NULL) && undo_verdict(db, NULL));
+    CHECK(count(db, "marked = true") == 0 && count(db, "") == every);
     // Evidence survives byte for byte.
     char *copy = file("copy.csv"), *original = NULL, *recovered = NULL;
     gsize a = 0, b = 0;
@@ -295,6 +315,49 @@ static void test_json(void) {
     sqlite3_close(db);
 }
 
+// Padded, undated and nested values.
+static void test_consistency(void) {
+    sqlite3 *db = open_case("odd.bec");
+    g_free(put("padded.csv", "Date (UTC),Username,IP address,Status,Location,Application\n"
+                             "2026-01-01T12:00:00Z,a@example.org,192.0.2.8,Success,\" Leeds, GB \",App\n"
+                             "2026-01-01T13:00:00Z,b@example.org,192.0.2.9,Success,\"Leeds, GB\",App \n"
+                             "2026-01-01T14:00:00Z, c@example.org ,192.0.2.9, Success ,\"LEEDS, gb\",\n"
+                             ",d@example.org,192.0.2.9,Failure,,\n"));
+    g_free(put("graph.json", "{\"value\":[{\"createdDateTime\":\"2026-01-02T00:00:00Z\",\"userPrincipalName\":\"e@example.org\","
+                             "\"location\":{\"city\":\"X\",\"countryOrRegion\":\"US\"},\"status\":{\"errorCode\":0},"
+                             "\"appDisplayName\":\"Portal\",\"clientAppUsed\":\"Browser\",\"conditionalAccessStatus\":\"success\","
+                             "\"deviceDetail\":{\"deviceId\":\"dev-9\",\"operatingSystem\":\"Windows10\"}}]}"));
+    CHECK(load(db, "padded.csv", NULL) == IMPORT_DONE && load(db, "graph.json", NULL) == IMPORT_DONE);
+    gint64 every = count(db, ""), dated = count(db, "time >= \"0001-01-01\"");
+    CHECK(every == 5 && dated == 4);
+    CHECK(count(db, "time < \"2026-01-01T13:00:00Z\"") == 1 && count(db, "time <= \"2026-01-01T13:00:00Z\"") == 2);
+    CHECK(count(db, "time < \"2030-01-01\"") + count(db, "time >= \"2030-01-01\"") == dated);
+    CHECK(count(db, "file = padded.csv AND result = \"success\"") == 3 && count(db, "file = padded.csv AND result = \" SUCCESS \"") == 3);
+    CHECK(count(db, "file = padded.csv AND result != \"Success\"") == 1 && count(db, "actor = \"c@example.org\"") == 1);
+    CHECK(count(db, "location = \"leeds, gb\"") == 3 && count(db, "field \"/Location\" = \"Leeds, GB\"") == 3);
+    CHECK(count(db, "location contains \" leeds\"") == 1 && count(db, "application = \"app\"") == 2);
+    CHECK(count(db, "exists \"/\"") == 0 && count(db, "field \"/\" = \"x\"") == 0 && count(db, "exists \"//\"") == 0);
+    // Graph sign-ins fill named fields.
+    CHECK(count(db, "location = \"X, US\"") == 1 && count(db, "device = dev-9") == 1 && count(db, "os = windows10") == 1);
+    CHECK(count(db, "application = Portal") == 1 && count(db, "client = Browser") == 1);
+    CHECK(count(db, "conditionalaccess = success") == 1 && count(db, "location contains \"us\"") == 1);
+    for (int i = 0; i < REPORT_COUNT; i++) {
+        GPtrArray *rows = stats_calculate(db, REPORTS[i].key, 0, "", 3600, NULL);
+        CHECK(rows != NULL);
+        for (guint k = 0; rows && k < rows->len; k++) {
+            StatRow *row = rows->pdata[k];
+            char *drill = stats_drilldown(REPORTS[i].key, row, 3600);
+            if (count(db, drill) != row->count)
+                printf("drill %s: %s\n", REPORTS[i].key, drill);
+            CHECK(count(db, drill) == row->count);
+            g_free(drill);
+        }
+        if (rows)
+            g_ptr_array_free(rows, TRUE);
+    }
+    sqlite3_close(db);
+}
+
 static void test_statistics(void) {
     sqlite3 *db = open_case("json.bec");
     for (int i = 0; i < REPORT_COUNT; i++) {
@@ -320,6 +383,7 @@ int main(void) {
     test_tabular();
     test_json();
     test_statistics();
+    test_consistency();
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

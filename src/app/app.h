@@ -9,6 +9,8 @@ typedef struct {
     char *export_path;
     gint64 log;
     gboolean headless;
+    char *mark;
+    char **mark_ips;
     char **files;
 } Options;
 
