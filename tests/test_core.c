@@ -167,6 +167,8 @@ static void test_tabular(void) {
     CHECK(load(db, "out.xlsx", NULL) == IMPORT_DONE);
     CHECK(count(db, "file = \"out.xlsx\" AND source = \"Interactive sign-ins\"") == 2);
     CHECK(count(db, "file = \"out.xlsx\" AND actor = \"=other@example.org\"") == 1);
+    // Imported verdicts undo first.
+    CHECK(undo_verdict(db, NULL) && count(db, "marked = true") == 2);
     CHECK(undo_verdict(db, NULL));
     CHECK(count(db, "marked = true") == 0);
     g_ptr_array_free(pairs, TRUE);
@@ -704,6 +706,28 @@ static void test_workbooks(void) {
     sqlite3_close(db);
 }
 
+// Timeline exports reimport faithfully.
+static void test_handoff(void) {
+    sqlite3 *db = open_case("handoff-source.bec");
+    g_free(put("verdicts.csv", "Operation,IP\nA,192.0.2.1\nB,192.0.2.2\nC,192.0.2.3\nD,192.0.2.4\n"));
+    CHECK(load(db, "verdicts.csv", NULL) == IMPORT_DONE);
+    CHECK(mark_matches(db, 0, "operation = A", "Good", 0, NULL) == 1 && mark_matches(db, 0, "operation = B", "Bad", 0, NULL) == 1);
+    CHECK(mark_matches(db, 0, "operation = C", "Unsure", 0, NULL) == 1);
+    static const char *const formats[] = {"csv", "xlsx", "json"};
+    for (guint i = 0; i < G_N_ELEMENTS(formats); i++) {
+        char *name = g_strconcat("handoff.", formats[i], NULL), *label = g_strconcat("handoff-", formats[i], ".bec", NULL);
+        CHECK(save(db, name, ""));
+        sqlite3 *fresh = open_case(label);
+        CHECK(load(fresh, name, NULL) == IMPORT_DONE);
+        CHECK(count(fresh, "verdict = Good AND operation = A") == 1 && count(fresh, "verdict = Bad AND operation = B") == 1);
+        CHECK(count(fresh, "verdict = Unsure AND operation = C") == 1 && count(fresh, "verdict = Unmarked AND operation = D") == 1);
+        sqlite3_close(fresh);
+        g_free(name);
+        g_free(label);
+    }
+    sqlite3_close(db);
+}
+
 int main(void) {
     root = g_dir_make_tmp("bec-test-XXXXXX", NULL);
     test_text();
@@ -719,6 +743,7 @@ int main(void) {
     test_read_only();
     test_copy();
     test_workbooks();
+    test_handoff();
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

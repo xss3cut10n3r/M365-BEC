@@ -151,7 +151,8 @@ static gboolean start_log(Importer *im, GPtrArray *headers, GError **error) {
     im->kind = detect(im, label);
     g_free(label);
     im->flat_audit = im->json && !has_header(im, "auditdata") && !strcmp(im->kind, "Purview audit");
-    im->own_export = im->json && !strcmp(im->kind, "Timeline") && has_header(im, "record") && has_header(im, "verdict");
+    // Timeline exports carry verdicts.
+    im->own_export = !strcmp(im->kind, "Timeline") && has_header(im, "verdict") && (!im->json || has_header(im, "record"));
     sqlite3_stmt *insert = sql_prepare(im->db, "INSERT INTO logs(file,name,sheet,kind,headers) VALUES(?,?,?,?,?)", error);
     gboolean ok = FALSE;
     if (insert) {
