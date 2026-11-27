@@ -8,6 +8,9 @@
     "\"application\" OR operation contains \"service principal\" OR operation contains \"app role\" OR "     \
     "operation contains \"permission grant\")"
 
+// Graph failures carry their reason.
+#define GRAPH_FAILURE "(source = \"Graph sign-ins\" AND result != \"Success\" AND result != \"\")"
+
 const Report REPORTS[] = {
     {"activity", "Activity over time", {"time"}, {"Interval start (UTC)"}, ""},
     {"indicators", "Investigation indicators", {"indicator"}, {"Recorded activity"}, ""},
@@ -113,6 +116,8 @@ static char *indicator_expression(const char *label) {
                                    INDICATORS[i].contains ? "contains" : "=", quoted);
             g_free(quoted);
         }
+        if (INDICATORS[i].result)
+            g_string_append(out, " OR " GRAPH_FAILURE);
     }
     return g_string_free(out, FALSE);
 }
@@ -132,9 +137,9 @@ static GPtrArray *indicators(sqlite3 *db, gint64 log, const char *filter, GError
         return NULL;
     }
     // Fold exactly like filters.
-    char *sql = g_strconcat("SELECT bql_fold(e.op),bql_fold(e.result),count(*),min(nullif(e.time,'')),max(nullif(e.time,''))"
-                            " FROM events e JOIN logs l ON l.id=e.log",
-                            clause, " GROUP BY 1,2", NULL);
+    char *sql = g_strconcat("SELECT bql_fold(e.op),bql_fold(e.result),count(*),min(nullif(e.time,'')),max(nullif(e.time,'')),"
+                            "bql_fold(", SQL_SOURCE, ")='graph sign-ins' FROM events e JOIN logs l ON l.id=e.log",
+                            clause, " GROUP BY 1,2,6", NULL);
     GPtrArray *rows = g_ptr_array_new_with_free_func((GDestroyNotify)stat_row_free);
     for (guint i = 0; i < G_N_ELEMENTS(INDICATORS); i++) {
         StatRow *row = g_new0(StatRow, 1);
@@ -152,7 +157,8 @@ static GPtrArray *indicators(sqlite3 *db, gint64 log, const char *filter, GError
             const char *last = (const char *)sqlite3_column_text(statement, 4);
             for (guint i = 0; i < G_N_ELEMENTS(INDICATORS); i++) {
                 const char *value = INDICATORS[i].result ? result : op;
-                gboolean hit = FALSE;
+                // Any named Graph outcome fails.
+                gboolean hit = INDICATORS[i].result && sqlite3_column_int(statement, 5) && *result && strcmp(result, "success");
                 for (int k = 0; k < 6 && INDICATORS[i].values[k] && !hit; k++) {
                     char *wanted = casefold(INDICATORS[i].values[k]);
                     hit = INDICATORS[i].contains ? strstr(value, wanted) != NULL : !strcmp(value, wanted);

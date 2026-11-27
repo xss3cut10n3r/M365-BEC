@@ -800,6 +800,15 @@ static void test_indicators(void) {
     CHECK(load(db, "padded-ops.csv", NULL) == IMPORT_DONE);
     CHECK(report_total(db, "indicators", "Messages sent") == 3);
     CHECK(report_total(db, "indicators", "Failures and interrupted operations") == 2);
+    // Graph failures name a reason.
+    g_free(put("reasons.json", "[{\"createdDateTime\":\"2026-06-01T12:00:00Z\",\"userPrincipalName\":\"u@example.org\","
+                               "\"status\":{\"errorCode\":50126,\"failureReason\":\"Invalid username or password\"}},"
+                               "{\"createdDateTime\":\"2026-06-01T13:00:00Z\",\"userPrincipalName\":\"u@example.org\","
+                               "\"status\":{\"errorCode\":0}}]"));
+    CHECK(load(db, "reasons.json", NULL) == IMPORT_DONE);
+    CHECK(report_total(db, "indicators", "Failures and interrupted operations") == 3);
+    CHECK(count(db, "result = \"Invalid username or password\" AND field \"/status/errorCode\" = 50126") == 1);
+    CHECK(report_total(db, "outcomes", NULL) == 2);
     sqlite3_close(db);
 }
 
