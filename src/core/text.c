@@ -92,7 +92,9 @@ char *group_digits(gint64 value) {
     return g_string_free(out, FALSE);
 }
 
-/* Timestamps follow datetime.fromisoformat. */
+/* Timestamps keep 100 ns ticks. */
+
+#define TICKS 10000000
 
 static gint64 days_from_civil(gint64 y, int m, int d) {
     y -= m <= 2;
@@ -237,18 +239,18 @@ static int parse_clock(const char *s, const char *end, int parts[4]) {
             return -4;
         p--;
     }
-    int available = (int)(end - p), used = MIN(available, 6);
+    int available = (int)(end - p), used = MIN(available, 7);
     if (used < 1 || !digits(p, used, &parts[3]))
         return -3;
     p += used;
-    for (int i = used; i < 6; i++)
+    for (int i = used; i < 7; i++)
         parts[3] *= 10;
     while (g_ascii_isdigit(*p))
         p++;
     return *p != 0;
 }
 
-// Returns microseconds since epoch.
+// Returns ticks since epoch.
 static gboolean parse_iso(const char *input, gint64 *micros) {
     char *stripped = py_strip(input);
     GString *text = g_string_new(NULL);
@@ -289,8 +291,8 @@ static gboolean parse_iso(const char *input, gint64 *micros) {
             int parts[4];
             if (parse_clock(zone + 1, end, parts) != 0)
                 goto done;
-            gint64 total = ((gint64)parts[0] * 3600 + parts[1] * 60 + parts[2]) * G_USEC_PER_SEC + parts[3];
-            if (total >= 86400 * (gint64)G_USEC_PER_SEC)
+            gint64 total = ((gint64)parts[0] * 3600 + parts[1] * 60 + parts[2]) * TICKS + parts[3];
+            if (total >= 86400 * (gint64)TICKS)
                 goto done;
             offset = *zone == '-' ? -total : total;
         }
@@ -298,7 +300,7 @@ static gboolean parse_iso(const char *input, gint64 *micros) {
             goto done;
     }
     *micros = (days_from_civil(year, month, day) * 86400 + clock[0] * 3600 + clock[1] * 60 + clock[2]) *
-                  (gint64)G_USEC_PER_SEC +
+                  (gint64)TICKS +
               clock[3] - offset;
     ok = TRUE;
 done:
@@ -307,10 +309,10 @@ done:
 }
 
 static char *format_micros(gint64 micros, gboolean fraction) {
-    gint64 seconds = micros / G_USEC_PER_SEC;
-    gint64 rest = micros % G_USEC_PER_SEC;
+    gint64 seconds = micros / TICKS;
+    gint64 rest = micros % TICKS;
     if (rest < 0) {
-        rest += G_USEC_PER_SEC;
+        rest += TICKS;
         seconds--;
     }
     gint64 days = seconds / 86400;
@@ -326,7 +328,7 @@ static char *format_micros(gint64 micros, gboolean fraction) {
         return g_strdup("");
     char *base = g_strdup_printf("%04d-%02d-%02dT%02d:%02d:%02d", (int)year, month, day, (int)(clock / 3600),
                                  (int)(clock / 60 % 60), (int)(clock % 60));
-    char *out = fraction ? g_strdup_printf("%s.%06dZ", base, (int)rest) : g_strdup_printf("%sZ", base);
+    char *out = fraction ? g_strdup_printf("%s.%07dZ", base, (int)rest) : g_strdup_printf("%sZ", base);
     g_free(base);
     return out;
 }
@@ -339,10 +341,11 @@ char *utc_normalize(const char *value) {
 }
 
 char *utc_from_epoch(gint64 seconds) {
-    return format_micros(seconds * G_USEC_PER_SEC, FALSE);
+    return format_micros(seconds * TICKS, FALSE);
 }
 
-char *utc_add_microsecond(const char *stamp) {
+// Returns the next representable instant.
+char *utc_after(const char *stamp) {
     gint64 micros;
     if (!parse_iso(stamp, &micros))
         return g_strdup("");

@@ -598,7 +598,7 @@ void dialog_mark_time(App *app, const char *verdict) {
     gtk_widget_set_hexpand(range->start, TRUE);
     gtk_editable_set_text(GTK_EDITABLE(range->start), first ? first : "");
     if (last && !g_str_has_prefix(last, "9999-12-31")) {
-        char *after = utc_add_microsecond(last);
+        char *after = utc_after(last);
         gtk_editable_set_text(GTK_EDITABLE(range->end), after);
         g_free(after);
     }

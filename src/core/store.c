@@ -165,7 +165,10 @@ static sqlite3 *open_immutable(const char *path, GError **error) {
     GError *problem = NULL;
     if (ok && sql_int(db, "PRAGMA application_id", &problem) != APP_ID && !problem)
         bec_fail(&problem, "Choose a valid M365 BEC case file");
-    if (ok && !problem && sql_int(db, "PRAGMA user_version", &problem) != 2 && !problem)
+    gint64 version = ok && !problem ? sql_int(db, "PRAGMA user_version", &problem) : 0;
+    if (ok && !problem && version == 2)
+        bec_fail(&problem, "This case uses an older format. Open it once from a writable folder to upgrade it.");
+    else if (ok && !problem && version != 3)
         bec_fail(&problem, "Unsupported case format");
     if (!ok || problem) {
         if (problem)
@@ -232,7 +235,7 @@ sqlite3 *case_connect(const char *path, GError **error) {
             if (fresh && !problem)
                 sql_run(db, "PRAGMA application_id=1111835441", &problem);
             if (fresh && !problem)
-                sql_run(db, "PRAGMA user_version=2", &problem);
+                sql_run(db, "PRAGMA user_version=3", &problem);
             if (!problem)
                 sql_run(db, "COMMIT", &problem);
         }
@@ -247,12 +250,27 @@ sqlite3 *case_connect(const char *path, GError **error) {
         };
         transact(db, migrate, G_N_ELEMENTS(migrate), &problem);
     }
-    if (!problem && sql_int(db, "PRAGMA user_version", &problem) != 2 && !problem)
+    gint64 version = problem ? 0 : sql_int(db, "PRAGMA user_version", &problem);
+    if (!problem && version != 2 && version != 3)
         bec_fail(&problem, "Unsupported case format");
     if (!problem)
         ensure_review_schema(db, &problem);
     if (!problem)
         protect_evidence(db, &problem);
+    if (!problem && version == 2) {
+        // Widen stored times to ticks.
+#define WIDEN(column) column "=substr(" column ",1,26)||'0Z'"
+        static const char *const widen[] = {
+            "UPDATE events SET " WIDEN("time") " WHERE length(time)=27",
+            "UPDATE verdict_rules SET " WIDEN("lo") " WHERE kind='time' AND length(lo)=27",
+            "UPDATE verdict_rules SET " WIDEN("hi") " WHERE kind='time' AND length(hi)=27",
+            "UPDATE marks SET " WIDEN("lo") " WHERE kind='time' AND length(lo)=27",
+            "UPDATE marks SET " WIDEN("hi") " WHERE kind='time' AND length(hi)=27",
+            "PRAGMA user_version=3",
+        };
+        if (sql_int(db, "PRAGMA user_version", &problem) == 2 && !problem)
+            transact(db, widen, G_N_ELEMENTS(widen), &problem);
+    }
     if (problem) {
         g_propagate_error(error, problem);
         sqlite3_close(db);

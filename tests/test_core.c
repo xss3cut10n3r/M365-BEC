@@ -89,7 +89,7 @@ static gboolean save(sqlite3 *db, const char *name, const char *filter) {
 
 static void test_text(void) {
     char *stamp = utc_normalize("2026-01-02T11:04:00+05:30");
-    CHECK(!strcmp(stamp, "2026-01-02T05:34:00.000000Z"));
+    CHECK(!strcmp(stamp, "2026-01-02T05:34:00.0000000Z"));
     g_free(stamp);
     stamp = utc_normalize("not a date");
     CHECK(!*stamp);
@@ -937,6 +937,37 @@ static void test_json_handoff(void) {
     sqlite3_close(db);
 }
 
+// Ticks order events within microseconds.
+static void test_ticks(void) {
+    sqlite3 *db = open_case("ticks.bec");
+    g_free(put("ticks.csv", "Date (UTC),Operation\n2026-02-01T01:00:00.1234569Z,Later\n2026-02-01T01:00:00.1234561Z,Earlier\n"
+                            "2026-02-01T01:00:00.12345Z,Short\n"));
+    CHECK(load(db, "ticks.csv", NULL) == IMPORT_DONE);
+    char *first = text_of(db, "SELECT e.op FROM events e JOIN timeline_ids t ON t.event=e.id WHERE t.number=2");
+    CHECK(!strcmp(first, "Earlier"));
+    g_free(first);
+    CHECK(count(db, "time = \"2026-02-01T01:00:00.1234561Z\"") == 1 && count(db, "time = \"2026-02-01T01:00:00.1234500Z\"") == 1);
+    CHECK(count(db, "time >= \"2026-02-01T01:00:00.1234569Z\"") == 1 && count(db, "time < \"2026-02-01T01:00:00.1234569Z\"") == 2);
+    CHECK(count(db, "time > \"2026-02-01T01:00:00.123456Z\" AND time <= \"2026-02-01T01:00:00.1234561Z\"") == 1);
+    char *next = utc_after("2026-02-01T01:00:00.1234561Z"), *zone = utc_normalize("2026-02-01T03:00:00.1234561+02:00");
+    CHECK(!strcmp(next, "2026-02-01T01:00:00.1234562Z") && !strcmp(zone, "2026-02-01T01:00:00.1234561Z"));
+    g_free(next);
+    g_free(zone);
+    // Older cases widen on opening.
+    GPtrArray *pairs = g_ptr_array_new();
+    g_ptr_array_add(pairs, "2026-02-01T01:00:00.123456Z");
+    g_ptr_array_add(pairs, "2026-02-01T01:00:00.123457Z");
+    CHECK(assign_verdict(db, "time", pairs, "Bad", NULL));
+    g_ptr_array_free(pairs, TRUE);
+    CHECK(sql_run(db, "UPDATE events SET time=substr(time,1,26)||'Z'", NULL) && sql_run(db, "PRAGMA user_version=2", NULL));
+    sqlite3_close(db);
+    db = open_case("ticks.bec");
+    CHECK(sql_int(db, "PRAGMA user_version", NULL) == 3 && sql_int(db, "SELECT count(*) FROM events WHERE length(time)!=28", NULL) == 0);
+    CHECK(count(db, "time = \"2026-02-01T01:00:00.123456Z\"") == 2 && count(db, "verdict = Bad") == 2);
+    CHECK(count(db, "time = \"2026-02-01T01:00:00.12345Z\" AND verdict = Unmarked") == 1);
+    sqlite3_close(db);
+}
+
 int main(void) {
     root = g_dir_make_tmp("bec-test-XXXXXX", NULL);
     test_text();
@@ -958,6 +989,7 @@ int main(void) {
     test_purview();
     test_json_values();
     test_json_handoff();
+    test_ticks();
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
