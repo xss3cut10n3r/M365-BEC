@@ -1156,6 +1156,29 @@ static void selection_notify(GObject *object, GParamSpec *spec, gpointer user) {
     render(user);
 }
 
+static gboolean tree_key(GtkEventControllerKey *controller, guint key, guint code, GdkModifierType state, gpointer user) {
+    (void)code;
+    (void)user;
+    if (key != GDK_KEY_Return && key != GDK_KEY_KP_Enter && key != GDK_KEY_ISO_Enter)
+        return FALSE;
+    if (state & (GDK_CONTROL_MASK | GDK_SHIFT_MASK | GDK_ALT_MASK))
+        return FALSE;
+    GtkTreeView *view = GTK_TREE_VIEW(gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(controller)));
+    GtkTreePath *path = NULL;
+    gtk_tree_view_get_cursor(view, &path, NULL);
+    GtkTreeIter iter;
+    gboolean branch = path && gtk_tree_model_get_iter(gtk_tree_view_get_model(view), &iter, path) &&
+                      gtk_tree_model_iter_has_child(gtk_tree_view_get_model(view), &iter);
+    // Enter toggles like double-click.
+    if (branch && gtk_tree_view_row_expanded(view, path))
+        gtk_tree_view_collapse_row(view, path);
+    else if (branch)
+        gtk_tree_view_expand_row(view, path, FALSE);
+    if (path)
+        gtk_tree_path_free(path);
+    return branch;
+}
+
 static void toggle_branch(GSimpleAction *action, GVariant *parameter, gpointer user) {
     (void)action;
     Inspector *in = user;
@@ -1366,6 +1389,10 @@ Inspector *inspector_new(App *app) {
         gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(click), GDK_BUTTON_SECONDARY);
         g_signal_connect(click, "pressed", G_CALLBACK(tree_context), in);
         gtk_widget_add_controller(trees[i], GTK_EVENT_CONTROLLER(click));
+        GtkEventController *keys = gtk_event_controller_key_new();
+        gtk_event_controller_set_propagation_phase(keys, GTK_PHASE_CAPTURE);
+        g_signal_connect(keys, "key-pressed", G_CALLBACK(tree_key), in);
+        gtk_widget_add_controller(trees[i], keys);
     }
     GtkGesture *click = gtk_gesture_click_new();
     gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(click), GDK_BUTTON_SECONDARY);
