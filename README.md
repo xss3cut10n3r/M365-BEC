@@ -1,75 +1,66 @@
 # M365 Email Log Analyzer
 
-An offline tool for investigating Microsoft 365 business email compromise on Windows and Linux. Review Purview audit logs, Entra sign-in and directory audit logs, and Exchange message traces on one UTC timeline.
+<p align="center"><img src="assets/screenshot.png" alt="Timeline of Microsoft 365 events with marked rows and the original record below" width="100%"></p>
 
-- [Download for Windows x64](https://github.com/xss3cut10n3r/M365-BEC/releases/latest/download/M365-BEC-windows-x64.zip). Extract the zip and run `M365-BEC.exe`.
-- [Download for Linux x64](https://github.com/xss3cut10n3r/M365-BEC/releases/latest/download/M365-BEC-linux-x64.tar.gz). Extract it and run `./m365-bec`. Needs Ubuntu 24.04 or a distribution of the same age or newer.
+M365 Email Log Analyzer puts every log from a Microsoft 365 email compromise on one UTC timeline. Load Purview audit logs, Entra sign-ins and directory audits, and Exchange message traces, then filter, mark, and export what the attacker did.
 
-## Investigate a case
+It runs offline on Windows and Linux. Nothing leaves your machine.
 
-1. Run `M365-BEC.exe` (Linux: `./m365-bec`) and click **Open logs**. Select CSV, Excel (`.xlsx`), or JSON files from one tenant.
-2. Save the `.bec` case when prompted. The case is one standalone file. It keeps sealed copies of the logs and your verdicts, and saves as you work. Original log files are only read. The open case shows in the title bar and status bar. Click **Open case** to resume later.
-3. In the **View** menu, choose **All case events**. Select an event to see its original record in **Source record**.
-4. To filter by IP, right-click an IP address, open **Apply as Filter**, and choose **Selected**. Use the **Edit** menu to mark an IP or a time range.
-5. In the **File** menu, choose **Export displayed events** to save the filtered rows as CSV, Excel, or JSON.
+**Download:** [Windows x64](https://github.com/xss3cut10n3r/M365-BEC/releases/latest/download/M365-BEC-windows-x64.zip) | [Linux x64](https://github.com/xss3cut10n3r/M365-BEC/releases/latest/download/M365-BEC-linux-x64.tar.gz)
 
-## Display filters
+## Why use it
 
-To find inbox rule changes for one mailbox, enter this BQL query above the timeline and press **Enter**.
+- **One timeline.** Portal exports arrive as separate CSV, Excel, and JSON files with different columns. Here they sort together by time.
+- **Evidence stays intact.** Each log is copied into a single `.bec` case file and sealed with its SHA-256 hash. Your original files are only read.
+- **Fast answers.** Right-click any value to filter on it. Ask who signed in from an IP, what rules a mailbox gained, or where a message went.
+- **Verdicts.** Mark events, IPs, or time ranges good, bad, or unsure. Rows are colored across the whole case.
+- **Traceable results.** Every event links back to its file and row. Export what you see as CSV, Excel, or JSON.
+
+## Get started
+
+1. Extract the download and run `M365-BEC.exe` (Linux: `./m365-bec`).
+2. Click **Open logs** and pick your exports. Save the case when asked.
+3. Choose **All case events** in the **View** menu.
+4. Right-click an IP address, then **Apply as Filter** > **Selected**.
+5. Mark what you find from the **Edit** menu. Export from the **File** menu.
+
+Filters are typed above the timeline:
 
 ```text
 mailbox = "analyst@example.org" AND operation contains "InboxRule"
 ```
 
-Nested fields use a path. This matches Graph sign-ins with one error code.
-
-```text
-field "/status/errorCode" = "50126"
-```
-
-For more fields, open **BQL display filter reference** in the **Help** menu. Use **Statistics** to review IPs, sign-ins, and mailbox activity.
-
-## JSON logs
-
-Import one event object, an array of events, or a Microsoft Graph export with events in `value`. Each event keeps its file name and JSON path, such as `/value/17`. Nested objects, arrays, nulls, and number text are preserved. Malformed or ambiguous files are rejected and the case is left unchanged.
-
-JSON exports are a UTF-8 array in the displayed order. Each entry holds the UTC time, source, original location, verdict, and the original record. The analyzer reads its own JSON exports and restores their verdicts.
+The **Help** menu lists every field. **Statistics** summarizes IPs, sign-ins, and mailbox activity.
 
 ## Command line
 
-```text
-M365-BEC --case case.bec logs.csv signins.json          open the window and import
-M365-BEC --case case.bec --filter "verdict = Bad"       open with a filter
-M365-BEC --no-gui --case case.bec logs.xlsx             import, then exit
+```sh
+M365-BEC --case case.bec logs.csv signins.json
 M365-BEC --case case.bec --filter "ip = 203.0.113.7" --export hits.json
 ```
 
-`--export` writes CSV, XLSX, or JSON by file extension, then exits.
+Add `--no-gui` to import without opening a window.
 
 ## Build from source
 
-The app is C17 with GTK 4, SQLite, and CMake.
+C17 with GTK 4, SQLite, and CMake.
 
-Windows x64: install [MSYS2](https://www.msys2.org), then run this in the UCRT64 shell.
+Windows, in the [MSYS2](https://www.msys2.org) UCRT64 shell:
 
 ```sh
 pacman -S --needed mingw-w64-ucrt-x86_64-{gcc,cmake,ninja,pkgconf,gtk4,sqlite,libxlsxwriter,libzip,yyjson,ntldd}
 bash packaging/windows.sh
 ```
 
-The package is written to `dist/windows/M365-BEC`. Run `M365-BEC.exe` from that folder.
-
-Linux x64 (Ubuntu 24.04 or newer):
+Linux, on Ubuntu 24.04 or newer:
 
 ```sh
 sudo apt install build-essential cmake ninja-build pkg-config libgtk-4-dev libsqlite3-dev zlib1g-dev libexpat1-dev libzip-dev libxlsxwriter-dev
 bash packaging/linux.sh
 ```
 
-The package is written to `dist/linux/M365-BEC`. Run `./m365-bec` from that folder.
+Packages are written to `dist/`. Run the tests with `ctest --test-dir build/win --output-on-failure`.
 
-## Tests
+## License
 
-```sh
-ctest --test-dir build/win --output-on-failure
-```
+[GPL-3.0](LICENSE)
