@@ -354,11 +354,24 @@ GPtrArray *event_values(EventFields *fields, const char *field) {
             }
         } else if (!strcmp(field, "session")) {
             add_text(texts, j_get(j_get(record, "AppAccessContext"), "AADSessionId"));
-        } else if (!strcmp(field, "subject")) {
-            add_text(texts, j_get(item, "Subject"));
-        } else if (!strcmp(field, "messageid")) {
-            add_text(texts, j_get(item, "InternetMessageId"));
+        } else if (!strcmp(field, "subject") || !strcmp(field, "messageid")) {
+            const char *key = field[0] == 's' ? "Subject" : "InternetMessageId";
+            add_text(texts, j_get(item, key));
+            // Deletions list affected messages.
+            const JV *affected = j_get(record, "AffectedItems");
+            for (guint i = 0; affected && affected->t == J_ARR && i < affected->n; i++)
+                add_text(texts, j_get(affected->u.a[i], key));
         } else if (!strcmp(field, "folder") || !strcmp(field, "mailitem")) {
+            const JV *affected = j_get(record, "AffectedItems");
+            for (guint i = 0; affected && affected->t == J_ARR && i < affected->n; i++) {
+                const JV *entry = affected->u.a[i];
+                if (entry->t != J_OBJ)
+                    continue;
+                if (!strcmp(field, "folder"))
+                    add_text(texts, j_get(j_get(entry, "ParentFolder"), "Path"));
+                else
+                    add_text(texts, first_truthy(entry, "InternetMessageId", "ImmutableId", "Id"));
+            }
             // Single items name their folder.
             if (item && item->t == J_OBJ) {
                 if (!strcmp(field, "folder"))

@@ -847,6 +847,15 @@ static void test_purview(void) {
     CHECK(count(db, "mailitem = stable-control") == 1 && count(db, "folder = \"/Sent\"") == 1);
     CHECK(count(db, "mailitem = csv-one") == 1 && count(db, "folder = \"/Archive\"") == 1);
     CHECK(report_total(db, "items", "stable-one") == 1 && report_total(db, "folders", "/Inbox") == 1);
+    // One deletion affects several messages.
+    g_free(put("deleted.json", "{\"CreationTime\":\"2026-03-01T01:00:00Z\",\"Operation\":\"SoftDelete\",\"RecordType\":3,"
+                               "\"UserId\":\"a@example.org\",\"AffectedItems\":[{\"Id\":\"item-two\","
+                               "\"InternetMessageId\":\"<msg-two@example.org>\",\"Subject\":\"Status update\","
+                               "\"ParentFolder\":{\"Path\":\"/Drafts\"}},{\"Id\":\"item-three\",\"Subject\":\"Other\"}]}"));
+    CHECK(load(db, "deleted.json", NULL) == IMPORT_DONE);
+    CHECK(count(db, "operation = SoftDelete AND messageid = \"<msg-two@example.org>\" AND subject = \"Status update\"") == 1);
+    CHECK(count(db, "operation = SoftDelete AND subject = Other AND mailitem = item-three AND folder = \"/Drafts\"") == 1);
+    CHECK(count(db, "subject = \"Status update\"") == 1 && count(db, "mailitem = \"<msg-two@example.org>\"") == 1);
     sqlite3_close(db);
 }
 
