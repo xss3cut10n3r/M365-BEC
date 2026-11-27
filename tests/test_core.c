@@ -7,6 +7,7 @@
 #ifdef G_OS_WIN32
 #include <windows.h>
 #else
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -508,6 +509,33 @@ static void test_first_imports(void) {
     g_free(path);
 }
 
+// New cases are private.
+static void test_permissions(void) {
+#ifdef G_OS_UNIX
+    mode_t before = umask(022);
+    sqlite3 *db = open_case("private.bec");
+    g_free(put("private.csv", "Operation\nA\n"));
+    CHECK(load(db, "private.csv", NULL) == IMPORT_DONE);
+    static const char *const names[] = {"private.bec", "private.bec-wal", "private.bec-shm"};
+    for (guint i = 0; i < G_N_ELEMENTS(names); i++) {
+        char *path = file(names[i]);
+        GStatBuf info;
+        CHECK(g_stat(path, &info) == 0 && (info.st_mode & 077) == 0);
+        g_free(path);
+    }
+    sqlite3_close(db);
+    // Chosen access is kept.
+    char *path = file("private.bec");
+    CHECK(g_chmod(path, 0640) == 0);
+    db = open_case("private.bec");
+    GStatBuf info;
+    CHECK(g_stat(path, &info) == 0 && (info.st_mode & 0777) == 0640);
+    sqlite3_close(db);
+    g_free(path);
+    umask(before);
+#endif
+}
+
 int main(void) {
     root = g_dir_make_tmp("bec-test-XXXXXX", NULL);
     test_text();
@@ -519,6 +547,7 @@ int main(void) {
     test_export_count();
     test_mark_scope();
     test_first_imports();
+    test_permissions();
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

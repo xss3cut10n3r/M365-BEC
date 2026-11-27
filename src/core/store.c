@@ -1,5 +1,7 @@
 #include "core.h"
 
+#include <glib/gstdio.h>
+#include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -124,6 +126,12 @@ static gboolean protect_evidence(sqlite3 *db, GError **error) {
 
 sqlite3 *case_connect(const char *path, GError **error) {
     sqlite3 *db = NULL;
+#ifdef G_OS_UNIX
+    // New cases stay owner-only.
+    int created = g_open(path, O_CREAT | O_EXCL | O_WRONLY, 0600);
+    if (created >= 0)
+        g_close(created, NULL);
+#endif
     if (sqlite3_open(path, &db) != SQLITE_OK) {
         bec_fail(error, "%s", db ? sqlite3_errmsg(db) : "Case file could not be opened");
         sqlite3_close(db);
