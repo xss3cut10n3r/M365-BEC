@@ -809,6 +809,12 @@ static void test_indicators(void) {
     CHECK(load(db, "padded-ops.csv", NULL) == IMPORT_DONE);
     CHECK(report_total(db, "indicators", "Messages sent") == 3);
     CHECK(report_total(db, "indicators", "Failures and interrupted operations") == 2);
+    // Identity case folds beyond ASCII.
+    g_free(put("accents.csv", "Request ID,Username,Status\nr1,\xc3\x89lodie@example.org,Success\nr2,\xc3\xa9lodie@example.org,Success\n"));
+    CHECK(load(db, "accents.csv", NULL) == IMPORT_DONE);
+    CHECK(count(db, "mailbox = \"\xc3\x89LODIE@example.org\"") == 2 && count(db, "mailbox contains \"\xc3\x89LOD\"") == 2);
+    CHECK(count(db, "mailbox != \"\xc3\xa9lodie@example.org\" AND file = accents.csv") == 0);
+    CHECK(report_total(db, "mailboxes", NULL) == 2);
     // Graph failures name a reason.
     g_free(put("reasons.json", "[{\"createdDateTime\":\"2026-06-01T12:00:00Z\",\"userPrincipalName\":\"u@example.org\","
                                "\"status\":{\"errorCode\":50126,\"failureReason\":\"Invalid username or password\"}},"
@@ -817,7 +823,7 @@ static void test_indicators(void) {
     CHECK(load(db, "reasons.json", NULL) == IMPORT_DONE);
     CHECK(report_total(db, "indicators", "Failures and interrupted operations") == 3);
     CHECK(count(db, "result = \"Invalid username or password\" AND field \"/status/errorCode\" = 50126") == 1);
-    CHECK(report_total(db, "outcomes", NULL) == 2);
+    CHECK(report_total(db, "outcomes", "Graph sign-ins") == 2);
     sqlite3_close(db);
 }
 

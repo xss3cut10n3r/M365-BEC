@@ -345,9 +345,9 @@ static char *term(Parser *parser) {
                 goto done;
             }
         }
-        const char *column = ip ? "ip" : "value";
-        char *condition = contains ? g_strdup_printf("instr(lower(%s),lower(?))>0", column)
-                                   : g_strdup_printf("%s = ? COLLATE NOCASE", column);
+        // Identities fold like report groups.
+        char *condition = !ip ? g_strdup(contains ? "instr(bql_fold(value),bql_fold(?))>0" : "bql_fold(value) = bql_fold(?)")
+                              : g_strdup(contains ? "instr(lower(ip),lower(?))>0" : "ip = ? COLLATE NOCASE");
         args_text(parser->args, value);
         result = g_strdup_printf("%sEXISTS (SELECT 1 FROM %s WHERE event=e.id AND %s)",
                                  !strcmp(op, "!=") ? "NOT " : "", ip ? "ips" : "identities", condition);
