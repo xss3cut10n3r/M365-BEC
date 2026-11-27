@@ -831,6 +831,22 @@ static void test_purview(void) {
     CHECK(load(db, "projected.json", NULL) == IMPORT_DONE && load(db, "typed.json", NULL) == IMPORT_DONE);
     CHECK(count(db, "source = \"Purview audit\"") == 2 && count(db, "subject = Example") == 1 && count(db, "subject = Typed") == 1);
     CHECK(count(db, "messageid = \"<one@example.org>\"") == 1);
+    // One item names its folder.
+    g_free(put("single-item.json", "{\"CreationTime\":\"2026-03-01T00:00:00Z\",\"Operation\":\"MailItemsAccessed\",\"RecordType\":2,"
+                                   "\"UserId\":\"a@example.org\",\"Item\":{\"Id\":\"item-one\",\"ImmutableId\":\"stable-one\","
+                                   "\"ParentFolder\":{\"Name\":\"Inbox\",\"Path\":\"/Inbox\"}}}"));
+    g_free(put("listed-items.json", "{\"CreationTime\":\"2026-03-01T03:00:00Z\",\"Operation\":\"MailItemsAccessed\",\"RecordType\":2,"
+                                    "\"UserId\":\"a@example.org\",\"Folders\":[{\"Path\":\"/Sent\","
+                                    "\"FolderItems\":[{\"ImmutableId\":\"stable-control\"}]}]}"));
+    g_free(put("single-item.csv", "CreationDate,Operation,AuditData\n2026-03-01T00:00:00Z,MailItemsAccessed,"
+                                  "\"{\"\"Operation\"\":\"\"MailItemsAccessed\"\",\"\"Item\"\":{\"\"Id\"\":\"\"csv-one\"\","
+                                  "\"\"ParentFolder\"\":{\"\"Path\"\":\"\"/Archive\"\"}}}\"\n"));
+    CHECK(load(db, "single-item.json", NULL) == IMPORT_DONE && load(db, "listed-items.json", NULL) == IMPORT_DONE);
+    CHECK(load(db, "single-item.csv", NULL) == IMPORT_DONE);
+    CHECK(count(db, "mailitem = stable-one") == 1 && count(db, "folder = \"/Inbox\"") == 1);
+    CHECK(count(db, "mailitem = stable-control") == 1 && count(db, "folder = \"/Sent\"") == 1);
+    CHECK(count(db, "mailitem = csv-one") == 1 && count(db, "folder = \"/Archive\"") == 1);
+    CHECK(report_total(db, "items", "stable-one") == 1 && report_total(db, "folders", "/Inbox") == 1);
     sqlite3_close(db);
 }
 

@@ -359,6 +359,13 @@ GPtrArray *event_values(EventFields *fields, const char *field) {
         } else if (!strcmp(field, "messageid")) {
             add_text(texts, j_get(item, "InternetMessageId"));
         } else if (!strcmp(field, "folder") || !strcmp(field, "mailitem")) {
+            // Single items name their folder.
+            if (item && item->t == J_OBJ) {
+                if (!strcmp(field, "folder"))
+                    add_text(texts, j_get(j_get(item, "ParentFolder"), "Path"));
+                else
+                    add_text(texts, first_truthy(item, "InternetMessageId", "ImmutableId", "Id"));
+            }
             const JV *folders = j_get(record, "Folders");
             for (guint i = 0; folders && folders->t == J_ARR && i < folders->n; i++) {
                 const JV *folder = folders->u.a[i];
