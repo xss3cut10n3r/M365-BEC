@@ -79,6 +79,7 @@ char *csv_line(GPtrArray *cells, gboolean neutralize) {
 typedef struct {
     sqlite3_stmt *rows;
     guint custom;
+    gint64 count;
     GPtrArray *cells;
     gboolean numeric[32];
 } Cursor;
@@ -92,6 +93,7 @@ static gboolean next_row(Cursor *cursor, sqlite3 *db, GError **error) {
         return FALSE;
     }
     sqlite3_stmt *r = cursor->rows;
+    cursor->count++;
     g_ptr_array_set_size(cursor->cells, 0);
     static const int order[] = {C_SOURCE, C_NAME, C_SHEET, C_ROW, C_TIME, C_ACTOR, C_OP, C_RESULT, C_IP, -1, C_ISSUE, C_NUMBER, C_VERDICT};
     for (guint i = 0; i < G_N_ELEMENTS(order); i++) {
@@ -299,6 +301,7 @@ static gboolean write_json(Cursor *cursor, sqlite3 *db, const char *path, GPtrAr
         gboolean json = log_is_json(name);
         sqlite3_bind_int64(origin, 1, sqlite3_column_int64(r, C_ID));
         if (sqlite3_step(origin) != SQLITE_ROW) {
+            cursor->count--;
             sqlite3_reset(origin);
             continue;
         }
@@ -357,7 +360,7 @@ static gboolean write_json(Cursor *cursor, sqlite3 *db, const char *path, GPtrAr
 }
 
 gboolean export_events(sqlite3 *db, const char *destination, gint64 log, const char *query, gboolean descending,
-                       const char *order_by, GPtrArray *custom, GError **error) {
+                       const char *order_by, GPtrArray *custom, gint64 *written, GError **error) {
     char *target = absolute_path(destination);
     const char *dot = strrchr(target, '.');
     const char *suffix = dot ? dot : "";
@@ -387,6 +390,9 @@ gboolean export_events(sqlite3 *db, const char *destination, gint64 log, const c
     sqlite3_finalize(cursor.rows);
     g_ptr_array_free(cursor.cells, TRUE);
     ok = ok && replace_file(temporary, target, error);
+    // Report rows actually written.
+    if (ok && written)
+        *written = cursor.count;
 done:
     if (temporary && !ok)
         g_unlink(temporary);

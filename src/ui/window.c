@@ -910,7 +910,7 @@ static gpointer file_job_run(gpointer data) {
             g_free(name);
         }
     } else if (db && !strcmp(job->kind, "export")) {
-        export_events(db, job->destination, job->log, job->query, job->desc, job->order, job->custom, &error);
+        export_events(db, job->destination, job->log, job->query, job->desc, job->order, job->custom, NULL, &error);
     } else if (db) {
         extract_evidence(db, job->file, job->destination, &error);
     }

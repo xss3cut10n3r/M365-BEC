@@ -28,7 +28,7 @@ void importer_warn(Importer *importer, const char *warning);
 gboolean json_import(Importer *importer, const char *data, gsize length, GError **error);
 
 gboolean export_events(sqlite3 *db, const char *destination, gint64 log, const char *query, gboolean descending,
-                       const char *order_by, GPtrArray *custom, GError **error);
+                       const char *order_by, GPtrArray *custom, gint64 *written, GError **error);
 gboolean extract_evidence(sqlite3 *db, gint64 file_id, const char *destination, GError **error);
 char *csv_line(GPtrArray *cells, gboolean neutralize);
 gboolean replace_file(const char *temporary, const char *destination, GError **error);

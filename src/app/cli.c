@@ -133,8 +133,8 @@ int cli_run(const Options *options) {
             filter = "marked = true";
     }
     if (options->export_path) {
-        if (export_events(db, options->export_path, options->log, filter, FALSE, "time", NULL, &error)) {
-            gint64 count = count_rows(db, options->log, filter, NULL);
+        gint64 count = 0;
+        if (export_events(db, options->export_path, options->log, filter, FALSE, "time", NULL, &count, &error)) {
             printf("Exported %" G_GINT64_FORMAT " events to %s\n", count, options->export_path);
         } else {
             fprintf(stderr, "Export failed: %s\n", error->message);

@@ -75,7 +75,7 @@ static char *text_of(sqlite3 *db, const char *sql) {
 static gboolean save(sqlite3 *db, const char *name, const char *filter) {
     char *path = file(name);
     GError *error = NULL;
-    gboolean ok = export_events(db, path, 0, filter, FALSE, "time", NULL, &error);
+    gboolean ok = export_events(db, path, 0, filter, FALSE, "time", NULL, NULL, &error);
     if (error) {
         printf("export %s: %s\n", name, error->message);
         g_clear_error(&error);
@@ -390,7 +390,7 @@ static char *slurp(const char *path) {
 }
 
 static gboolean export_to(sqlite3 *db, const char *path, const char *filter) {
-    return export_events(db, path, 0, filter, FALSE, "time", NULL, NULL);
+    return export_events(db, path, 0, filter, FALSE, "time", NULL, NULL, NULL);
 }
 
 // Aliases reach the same file.
@@ -431,6 +431,27 @@ static void test_aliases(void) {
     sqlite3_close(db);
 }
 
+// Counts come from the snapshot.
+static void test_export_count(void) {
+    sqlite3 *db = open_case("count.bec"), *other = open_case("count.bec");
+    g_free(put("three.csv", "Operation\nA\nB\nC\n"));
+    g_free(put("late.csv", "Operation\nLate\n"));
+    CHECK(load(db, "three.csv", NULL) == IMPORT_DONE);
+    char *path = file("counted.json");
+    gint64 written = -1;
+    CHECK(export_events(db, path, 0, "operation != B", FALSE, "time", NULL, &written, NULL) && written == 2);
+    CHECK(load(other, "late.csv", NULL) == IMPORT_DONE);
+    CHECK(export_events(db, path, 0, "", FALSE, "time", NULL, &written, NULL) && written == 4);
+    char *text = slurp(path);
+    JDoc *doc = j_parse(text, -1, 0, NULL);
+    CHECK(doc && doc->root->n == 4);
+    j_free(doc);
+    g_free(text);
+    g_free(path);
+    sqlite3_close(other);
+    sqlite3_close(db);
+}
+
 int main(void) {
     root = g_dir_make_tmp("bec-test-XXXXXX", NULL);
     test_text();
@@ -439,6 +460,7 @@ int main(void) {
     test_statistics();
     test_consistency();
     test_aliases();
+    test_export_count();
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
