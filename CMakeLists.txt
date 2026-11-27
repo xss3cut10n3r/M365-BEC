@@ -1,0 +1,45 @@
+cmake_minimum_required(VERSION 3.20)
+project(m365-bec VERSION 2.0.0 LANGUAGES C)
+
+set(CMAKE_C_STANDARD 17)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS ON)
+if(NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE Release)
+endif()
+option(BEC_BUILD_UI "Build the GTK desktop app" ON)
+
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(CORE REQUIRED IMPORTED_TARGET glib-2.0 sqlite3 zlib expat libzip xlsxwriter yyjson)
+
+add_library(beccore STATIC
+  src/core/text.c src/core/json.c src/core/fields.c src/core/bql.c
+  src/core/store.c src/core/stats.c
+  src/io/csv_read.c src/io/xlsx_read.c src/io/import.c src/io/export.c)
+target_link_libraries(beccore PUBLIC PkgConfig::CORE m)
+target_compile_options(beccore PRIVATE -Wall -Wextra -Wno-unused-parameter)
+
+if(BEC_BUILD_UI)
+  pkg_check_modules(GTK REQUIRED IMPORTED_TARGET gtk4)
+  file(GLOB UI_SOURCES CONFIGURE_DEPENDS src/ui/*.c)
+  set(APP_SOURCES src/app/main.c src/app/cli.c ${UI_SOURCES})
+  if(WIN32)
+    list(APPEND APP_SOURCES assets/app.rc)
+  endif()
+  add_executable(M365-BEC ${APP_SOURCES})
+  target_link_libraries(M365-BEC PRIVATE beccore PkgConfig::GTK)
+  target_compile_options(M365-BEC PRIVATE -Wall -Wextra -Wno-unused-parameter)
+  if(WIN32)
+    target_link_options(M365-BEC PRIVATE -mwindows)
+    target_link_libraries(M365-BEC PRIVATE dwmapi)
+  else()
+    set_target_properties(M365-BEC PROPERTIES OUTPUT_NAME m365-bec)
+  endif()
+endif()
+
+enable_testing()
+add_executable(bec-tool tests/tool.c)
+target_link_libraries(bec-tool PRIVATE beccore)
+add_executable(test_core tests/test_core.c)
+target_link_libraries(test_core PRIVATE beccore)
+add_test(NAME core COMMAND test_core)
