@@ -134,15 +134,17 @@ sqlite3 *case_connect(const char *path, GError **error) {
     gint64 identity = sql_int(db, "PRAGMA application_id", &problem);
     if (!problem && identity != APP_ID) {
         if (sql_run(db, "BEGIN IMMEDIATE", &problem)) {
-            if (sql_int(db, "SELECT count(*) FROM sqlite_master", &problem) != 0) {
+            // Another process may have initialized.
+            gboolean fresh = sql_int(db, "PRAGMA application_id", &problem) != APP_ID;
+            if (fresh && !problem && sql_int(db, "SELECT count(*) FROM sqlite_master", &problem) != 0) {
                 if (!problem)
                     bec_fail(&problem, "Choose a valid M365 BEC case file");
             }
-            for (guint i = 0; !problem && i < G_N_ELEMENTS(DDL); i++)
+            for (guint i = 0; fresh && !problem && i < G_N_ELEMENTS(DDL); i++)
                 sql_run(db, DDL[i], &problem);
-            if (!problem)
+            if (fresh && !problem)
                 sql_run(db, "PRAGMA application_id=1111835441", &problem);
-            if (!problem)
+            if (fresh && !problem)
                 sql_run(db, "PRAGMA user_version=2", &problem);
             if (!problem)
                 sql_run(db, "COMMIT", &problem);

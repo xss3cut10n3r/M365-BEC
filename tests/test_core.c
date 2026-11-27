@@ -482,6 +482,32 @@ static void test_mark_scope(void) {
     sqlite3_close(db);
 }
 
+static gpointer first_import(gpointer name) {
+    sqlite3 *db = open_case("race.bec");
+    gboolean ok = db && load(db, name, NULL) == IMPORT_DONE;
+    sqlite3_close(db);
+    return GINT_TO_POINTER(ok);
+}
+
+// Two importers create one case.
+static void test_first_imports(void) {
+    char *path = file("race.bec");
+    g_free(put("race-a.csv", "Operation\nA\n"));
+    g_free(put("race-b.csv", "Operation\nB\n"));
+    sqlite3 *lock = NULL;
+    CHECK(sqlite3_open(path, &lock) == SQLITE_OK && sql_run(lock, "BEGIN IMMEDIATE", NULL));
+    GThread *a = g_thread_new("a", first_import, "race-a.csv"), *b = g_thread_new("b", first_import, "race-b.csv");
+    g_usleep(500000);
+    CHECK(sql_run(lock, "ROLLBACK", NULL));
+    sqlite3_close(lock);
+    CHECK(GPOINTER_TO_INT(g_thread_join(a)));
+    CHECK(GPOINTER_TO_INT(g_thread_join(b)));
+    sqlite3 *db = open_case("race.bec");
+    CHECK(count(db, "") == 2 && sql_int(db, "SELECT count(*) FROM files", NULL) == 2);
+    sqlite3_close(db);
+    g_free(path);
+}
+
 int main(void) {
     root = g_dir_make_tmp("bec-test-XXXXXX", NULL);
     test_text();
@@ -492,6 +518,7 @@ int main(void) {
     test_aliases();
     test_export_count();
     test_mark_scope();
+    test_first_imports();
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
