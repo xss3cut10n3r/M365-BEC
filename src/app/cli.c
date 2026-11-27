@@ -28,20 +28,24 @@ static void progress(const char *message, gpointer user) {
     fprintf(stderr, "%s\n", message);
 }
 
-// Applies command-line verdicts.
-static int cli_mark(sqlite3 *db, const Options *options) {
+// Names the requested verdict.
+static const char *mark_verdict(const Options *options) {
     static const char *const words[][2] = {{"good", "Good"}, {"bad", "Bad"}, {"unsure", "Unsure"}, {"clear", "Unmarked"}};
-    const char *verdict = NULL;
     for (guint i = 0; i < G_N_ELEMENTS(words); i++)
         if (!g_ascii_strcasecmp(options->mark, words[i][0]))
-            verdict = words[i][1];
-    gboolean ips = options->mark_ips && options->mark_ips[0];
-    if (!verdict || (!ips && !(options->filter && *options->filter))) {
-        fprintf(stderr, "Use --mark good|bad|unsure|clear with --filter BQL or --mark-ip IP.\n");
-        return 2;
-    }
+            return words[i][1];
+    return NULL;
+}
+
+static gboolean mark_by_ip(const Options *options) {
+    return options->mark_ips && options->mark_ips[0];
+}
+
+// Applies command-line verdicts.
+static int cli_mark(sqlite3 *db, const Options *options) {
+    const char *verdict = mark_verdict(options);
     GError *error = NULL;
-    if (ips) {
+    if (mark_by_ip(options)) {
         GPtrArray *pairs = g_ptr_array_new_with_free_func(g_free);
         for (char **ip = options->mark_ips; *ip && !error; ip++) {
             char *address = ip_normalize(*ip);
@@ -71,6 +75,18 @@ int cli_run(const Options *options) {
     if (!options->case_path) {
         fprintf(stderr, "Use --case CASE.bec with --export, --mark or --no-gui.\n");
         return 2;
+    }
+    if (options->mark) {
+        // Check scopes before writing.
+        gboolean filtered = options->filter && *options->filter;
+        if (!mark_verdict(options) || (!mark_by_ip(options) && !filtered)) {
+            fprintf(stderr, "Use --mark good|bad|unsure|clear with --filter BQL or --mark-ip IP.\n");
+            return 2;
+        }
+        if (mark_by_ip(options) && filtered) {
+            fprintf(stderr, "Use --mark with either --filter BQL or --mark-ip IP, not both. Nothing was marked.\n");
+            return 2;
+        }
     }
     // Exports never replace inputs.
     for (char **file = options->files; options->export_path && file && *file; file++) {
@@ -113,7 +129,7 @@ int cli_run(const Options *options) {
             return status ? status : marked;
         }
         // IP marks export everything.
-        if (options->mark_ips && options->mark_ips[0] && !options->filter)
+        if (mark_by_ip(options))
             filter = "marked = true";
     }
     if (options->export_path) {
