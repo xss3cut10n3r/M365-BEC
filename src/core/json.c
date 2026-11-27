@@ -410,6 +410,20 @@ void j_dump(GString *out, const JV *value, int flags) {
     dump(out, value, flags, 0);
 }
 
+// Text stays whole past NULs.
+char *j_string(const JV *value) {
+    if (strlen(value->u.s) == value->n)
+        return g_strdup(value->u.s);
+    GString *out = g_string_sized_new(value->n + 8);
+    for (guint i = 0; i < value->n; i++) {
+        if (value->u.s[i])
+            g_string_append_c(out, value->u.s[i]);
+        else
+            g_string_append(out, "\xef\xbf\xbd");
+    }
+    return g_string_free(out, FALSE);
+}
+
 char *j_text(const JV *value, gboolean json_booleans) {
     if (!value)
         return g_strdup("");
@@ -423,7 +437,7 @@ char *j_text(const JV *value, gboolean json_booleans) {
     case J_NUM:
         return j_number_text(value);
     case J_STR:
-        return g_strdup(value->u.s);
+        return j_string(value);
     default: {
         GString *out = g_string_new(NULL);
         j_dump(out, value, J_COMPACT);
@@ -434,7 +448,7 @@ char *j_text(const JV *value, gboolean json_booleans) {
 
 char *j_scalar(const JV *value) {
     if (value->t == J_STR)
-        return g_strdup(value->u.s);
+        return j_string(value);
     GString *out = g_string_new(NULL);
     j_dump(out, value, J_COMPACT);
     return g_string_free(out, FALSE);

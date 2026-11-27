@@ -60,6 +60,7 @@ char *j_number_text(const JV *number);
 char *py_float_repr(double value);
 char *j_text(const JV *value, gboolean json_booleans);
 char *j_scalar(const JV *value);
+char *j_string(const JV *value);
 // Decode embedded JSON cells.
 const JV *j_decode(JDoc *doc, const JV *value);
 gboolean j_row_strings(const char *raw, const int *indexes, guint count, guint width, gboolean strict, GPtrArray *out);

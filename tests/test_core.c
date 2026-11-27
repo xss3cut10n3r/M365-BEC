@@ -875,6 +875,22 @@ static void test_purview(void) {
     sqlite3_close(db);
 }
 
+// Odd JSON values stay usable.
+static void test_json_values(void) {
+    sqlite3 *db = open_case("values.bec");
+    g_free(put("nul.json", "{\"Operation\":\"Send\",\"CreationTime\":\"2026-06-01T00:00:00Z\",\"Note\":\"before\\u0000after\","
+                           "\"Item\":{\"Subject\":\"top\\u0000secret\"}}"));
+    CHECK(load(db, "nul.json", NULL) == IMPORT_DONE);
+    CHECK(count(db, "field \"/Note\" contains after") == 1 && count(db, "field \"/Note\" contains before") == 1);
+    CHECK(count(db, "field \"/Note\" = \"before\xef\xbf\xbd" "after\"") == 1 && count(db, "subject contains secret") == 1);
+    CHECK(save(db, "nul-out.json", ""));
+    char *path = file("nul-out.json"), *text = slurp(path);
+    CHECK(strstr(text, "\"Note\":\"before\\u0000after\""));
+    g_free(text);
+    g_free(path);
+    sqlite3_close(db);
+}
+
 int main(void) {
     root = g_dir_make_tmp("bec-test-XXXXXX", NULL);
     test_text();
@@ -894,6 +910,7 @@ int main(void) {
     test_pivots();
     test_indicators();
     test_purview();
+    test_json_values();
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

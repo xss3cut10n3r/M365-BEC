@@ -227,7 +227,7 @@ static const JV *first_truthy(const JV *object, const char *a, const char *b, co
 
 static void add_text(GPtrArray *texts, const JV *value) {
     if (value && value->t == J_STR)
-        g_ptr_array_add(texts, g_strdup(value->u.s));
+        g_ptr_array_add(texts, j_string(value));
 }
 
 static void split_recipients(GPtrArray *texts, const char *cell, gboolean statuses) {
