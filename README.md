@@ -71,8 +71,5 @@ The package is written to `dist/linux/M365-BEC`. Run `./m365-bec` from that fold
 ## Tests
 
 ```sh
-ctest --test-dir build/win --output-on-failure      # native regression tests
-python tests/parity.py build/win/bec-tool.exe       # compare against the Python reference
+ctest --test-dir build/win --output-on-failure
 ```
-
-The Python reference app (`analyzer.py`) stays in this repository. Build it with `python -m pip install -r requirements-build.txt` and `.\build.cmd`.

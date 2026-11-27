@@ -237,7 +237,7 @@ static gboolean integer_literal(const char *s) {
     return *s == 0;
 }
 
-// Matches Python float repr.
+// Shortest round-trip float text.
 char *py_float_repr(double value) {
     if (isnan(value))
         return g_strdup("NaN");
