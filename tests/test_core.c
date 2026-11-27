@@ -821,6 +821,19 @@ static void test_indicators(void) {
     sqlite3_close(db);
 }
 
+// Purview records nest their evidence.
+static void test_purview(void) {
+    sqlite3 *db = open_case("purview.bec");
+    g_free(put("projected.json", "{\"CreationTime\":\"2026-02-01T00:00:00Z\",\"Operation\":\"Send\","
+                                 "\"Item\":{\"Subject\":\"Example\",\"InternetMessageId\":\"<one@example.org>\"}}"));
+    g_free(put("typed.json", "{\"CreationTime\":\"2026-02-01T00:01:00Z\",\"Operation\":\"Send\",\"RecordType\":2,"
+                             "\"Item\":{\"Subject\":\"Typed\"}}"));
+    CHECK(load(db, "projected.json", NULL) == IMPORT_DONE && load(db, "typed.json", NULL) == IMPORT_DONE);
+    CHECK(count(db, "source = \"Purview audit\"") == 2 && count(db, "subject = Example") == 1 && count(db, "subject = Typed") == 1);
+    CHECK(count(db, "messageid = \"<one@example.org>\"") == 1);
+    sqlite3_close(db);
+}
+
 int main(void) {
     root = g_dir_make_tmp("bec-test-XXXXXX", NULL);
     test_text();
@@ -839,6 +852,7 @@ int main(void) {
     test_handoff();
     test_pivots();
     test_indicators();
+    test_purview();
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

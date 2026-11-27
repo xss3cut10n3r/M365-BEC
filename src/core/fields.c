@@ -89,8 +89,7 @@ static gboolean has(const Columns *columns, const char *clean) {
 
 // Flat audit records lack AuditData.
 static gboolean flat_audit(const Columns *columns) {
-    return !has(columns, "auditdata") && has(columns, "creationtime") && has(columns, "operation") &&
-           has(columns, "recordtype");
+    return !has(columns, "auditdata") && has(columns, "creationtime") && has(columns, "operation");
 }
 
 gboolean columns_support(const Columns *columns, const char *field) {
