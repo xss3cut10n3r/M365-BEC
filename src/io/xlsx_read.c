@@ -463,14 +463,15 @@ static void sheet_end(void *user, const XML_Char *name) {
         g_free(book->row->pdata[book->column - 1]);
         book->row->pdata[book->column - 1] = value ? value : g_strdup("");
     } else if (!strcmp(tag, "row")) {
-        // Missing rows become empty.
-        GPtrArray *blank = g_ptr_array_new();
+        // Absent rows only advance numbering.
         while (book->emitted + 1 < book->row_number && book->emitted < 1048576)
-            if (!emit_row(book, blank))
+            if (!emit_row(book, NULL))
                 break;
-        g_ptr_array_free(blank, TRUE);
+        gboolean filled = FALSE;
+        for (guint i = 0; i < book->row->len && !filled; i++)
+            filled = *(const char *)book->row->pdata[i] != 0;
         if (!book->failed && book->emitted < book->row_number)
-            emit_row(book, book->row);
+            emit_row(book, filled ? book->row : NULL);
     }
 }
 

@@ -3,6 +3,8 @@
 #include <glib/gstdio.h>
 #include <stdio.h>
 #include <string.h>
+#include <xlsxwriter.h>
+#include <zip.h>
 
 #ifdef G_OS_WIN32
 #include <windows.h>
@@ -613,6 +615,55 @@ static void test_copy(void) {
     g_free(copy);
 }
 
+// Rewrites one workbook part.
+static void zip_swap(const char *path, const char *entry, const char *from, const char *to) {
+    zip_t *archive = zip_open(path, 0, NULL);
+    zip_stat_t info;
+    GString *text = g_string_new(NULL);
+    if (archive && from && zip_stat(archive, entry, 0, &info) == 0) {
+        zip_file_t *part = zip_fopen(archive, entry, 0);
+        g_string_set_size(text, info.size);
+        zip_fread(part, text->str, info.size);
+        zip_fclose(part);
+        g_string_replace(text, from, to, 0);
+    } else {
+        g_string_assign(text, to);
+    }
+    gboolean ok = archive && zip_file_add(archive, entry, zip_source_buffer(archive, text->str, text->len, 0), ZIP_FL_OVERWRITE) >= 0;
+    CHECK(ok && zip_close(archive) == 0);
+    g_string_free(text, TRUE);
+}
+
+static void write_cells(lxw_worksheet *sheet, int row, const char *first, const char *second) {
+    worksheet_write_string(sheet, row, 0, first, NULL);
+    if (second)
+        worksheet_write_string(sheet, row, 1, second, NULL);
+}
+
+// Gaps, escapes and relocated sheets.
+static void test_workbooks(void) {
+    sqlite3 *db = open_case("books.bec");
+    char *path = file("gaps.xlsx");
+    lxw_workbook *book = workbook_new(path);
+    lxw_format *bold = workbook_add_format(book);
+    format_set_bold(bold);
+    write_cells(workbook_add_worksheet(book, "Cover"), 0, "Status", NULL);
+    lxw_worksheet *sheet = workbook_add_worksheet(book, "Evidence");
+    write_cells(sheet, 1, "Operation", "Actor");
+    write_cells(sheet, 2, "Send", "a");
+    worksheet_write_blank(sheet, 3, 0, bold);
+    write_cells(sheet, 5, "Delete", "b");
+    write_cells(sheet, 6, "Short", NULL);
+    CHECK(workbook_close(book) == LXW_NO_ERROR);
+    CHECK(load(db, "gaps.xlsx", NULL) == IMPORT_DONE);
+    CHECK(count(db, "sheet = Evidence") == 3 && count(db, "sheet = Cover") == 0);
+    CHECK(count(db, "operation = Send AND row = 3 AND actor = a") == 1 && count(db, "operation = Delete AND row = 6") == 1);
+    CHECK(count(db, "operation = Short AND row = 7 AND issue contains \"Expected 2 fields\"") == 1);
+    CHECK(sql_int(db, "SELECT issues FROM logs WHERE sheet='Evidence'", NULL) == 1);
+    g_free(path);
+    sqlite3_close(db);
+}
+
 int main(void) {
     root = g_dir_make_tmp("bec-test-XXXXXX", NULL);
     test_text();
@@ -627,6 +678,7 @@ int main(void) {
     test_permissions();
     test_read_only();
     test_copy();
+    test_workbooks();
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

@@ -20,7 +20,7 @@ struct Importer {
     guint width;
     GHashTable *positions;
     GArray *targets;
-    gint64 count, problems;
+    gint64 count, problems, line;
     gboolean flat_audit;
     gboolean own_export;
     GString *warnings;
@@ -119,7 +119,7 @@ gboolean importer_begin(Importer *im, const char *sheet, GError **error) {
     (void)error;
     im->active = FALSE;
     im->log = 0;
-    im->count = im->problems = 0;
+    im->count = im->problems = im->line = 0;
     g_free(im->kind);
     im->kind = g_strdup(sheet);
     g_string_truncate(im->warnings, 0);
@@ -199,14 +199,14 @@ static void add_address(GPtrArray *ips, const char *value) {
 }
 
 gboolean importer_row(Importer *im, GPtrArray *values, const char *raw, const JV *record, GError **error) {
+    // Source rows keep their numbers.
+    im->line++;
+    if (!values)
+        return TRUE;
     if (!im->log && !im->active) {
-        // The first row names columns.
-        if (im->count < 0)
+        // The first filled row names columns.
+        if (!values->len && !im->json)
             return TRUE;
-        if (!values->len && !im->json) {
-            im->count = -1;
-            return TRUE;
-        }
         return start_log(im, values, error);
     }
     if (!im->active)
@@ -313,7 +313,7 @@ gboolean importer_row(Importer *im, GPtrArray *values, const char *raw, const JV
     }
     sqlite3_stmt *event = im->event;
     sqlite3_bind_int64(event, 1, im->log);
-    sqlite3_bind_int64(event, 2, im->json ? count : count + 1);
+    sqlite3_bind_int64(event, 2, im->json ? count : im->line);
     sqlite3_bind_text(event, 3, time, -1, SQLITE_STATIC);
     sqlite3_bind_text(event, 4, actor, -1, SQLITE_STATIC);
     sqlite3_bind_text(event, 5, op, -1, SQLITE_STATIC);

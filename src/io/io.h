@@ -6,6 +6,7 @@
 // Readers push rows here.
 typedef struct {
     gboolean (*begin)(const char *sheet, gpointer user, GError **error);
+    // NULL marks absent rows.
     gboolean (*row)(GPtrArray *values, gpointer user, GError **error);
     gboolean (*end)(gpointer user, GError **error);
     gpointer user;
