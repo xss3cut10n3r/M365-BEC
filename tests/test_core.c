@@ -751,6 +751,17 @@ static void test_pivots(void) {
     CHECK(load(db, "trace.csv", NULL) == IMPORT_DONE);
     CHECK(count(db, "source = \"Exchange trace\" AND ip = 192.0.2.8") == 1 && count(db, "ip = 192.0.2.9") == 1);
     CHECK(count(db, "field \"/FromIP\" = 192.0.2.8 AND field \"/ToIP\" = 192.0.2.9") == 1);
+    // Directory audits name both sides.
+    g_free(put("audit.json", "[{\"activityDateTime\":\"2026-06-01T00:00:00Z\",\"activityDisplayName\":\"Update user\","
+                             "\"result\":\"success\",\"initiatedBy\":{\"user\":{\"userPrincipalName\":\"admin@example.org\","
+                             "\"ipAddress\":\"192.0.2.1\"}},\"targetResources\":[{\"type\":\"User\",\"id\":\"t-1\","
+                             "\"userPrincipalName\":\"target@example.org\"}]},"
+                             "{\"activityDateTime\":\"2026-06-01T12:00:00Z\",\"activityDisplayName\":\"Consent to application\","
+                             "\"result\":\"success\"}]"));
+    CHECK(load(db, "audit.json", NULL) == IMPORT_DONE);
+    CHECK(count(db, "ip = 192.0.2.1") == 1 && count(db, "target = \"target@example.org\"") == 1);
+    CHECK(count(db, "mailbox = \"target@example.org\"") == 1 && count(db, "target = t-1 AND actor = \"admin@example.org\"") == 1);
+    CHECK(count(db, "actor = \"target@example.org\"") == 0 && count(db, "target = \"admin@example.org\"") == 0);
     sqlite3_close(db);
 }
 

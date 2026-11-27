@@ -290,6 +290,10 @@ gboolean importer_row(Importer *im, GPtrArray *values, const char *raw, const JV
         prefer(&op, g_strdup(GET(im, values, "activitydisplayname", "operationname")));
         prefer(&result, g_strdup(GET(im, values, "resultstatus")));
         add_address(ips, GET(im, values, "clientip", "clientipaddress", "calleripaddress"));
+        // Graph audits nest the initiator.
+        char *initiator = nested_text(record, "initiatedBy", "user", "ipAddress");
+        add_address(ips, initiator);
+        g_free(initiator);
         if (!*request && g_str_has_suffix(im->kind, " sign-ins")) {
             g_free(request);
             request = g_utf8_strdown(GET(im, values, "id"), -1);
@@ -345,6 +349,9 @@ gboolean importer_row(Importer *im, GPtrArray *values, const char *raw, const JV
         if (index < values->len)
             g_ptr_array_add(users, g_strdup(values->pdata[index]));
     }
+    const JV *resources = im->json ? j_get(record, "targetResources") : NULL;
+    for (guint i = 0; resources && resources->t == J_ARR && i < resources->n; i++)
+        g_ptr_array_add(users, j_text(j_get(resources->u.a[i], "userPrincipalName"), FALSE));
     char **recipients =
         g_strsplit(GET(im, values, "recipient_address", "recipientaddress", "recipient address", "recipient_status"), ";", -1);
     for (char **entry = recipients; *entry; entry++) {

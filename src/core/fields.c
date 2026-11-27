@@ -102,6 +102,8 @@ gboolean columns_support(const Columns *columns, const char *field) {
     // Graph nests device details.
     if ((!strcmp(field, "device") || !strcmp(field, "os")) && has(columns, "devicedetail"))
         return TRUE;
+    if (!strcmp(field, "target") && has(columns, "targetresources"))
+        return TRUE;
     if (!strcmp(field, "target"))
         for (guint i = 0; i < columns->clean->len; i++)
             if (g_str_has_prefix(columns->clean->pdata[i], "target"))
@@ -360,6 +362,16 @@ GPtrArray *event_values(EventFields *fields, const char *field) {
                 outer(fields, clean, cells);
                 for (guint k = 0; k < cells->len; k++)
                     add_text(texts, cells->pdata[k]);
+            }
+            // Graph lists affected resources.
+            g_ptr_array_set_size(cells, 0);
+            outer(fields, "targetResources", cells);
+            static const char *const names[] = {"userPrincipalName", "displayName", "id"};
+            for (guint i = 0; i < cells->len; i++) {
+                const JV *list = cells->pdata[i];
+                for (guint k = 0; list->t == J_ARR && k < list->n; k++)
+                    for (guint n = 0; n < G_N_ELEMENTS(names); n++)
+                        add_text(texts, j_get(list->u.a[k], names[n]));
             }
         }
     }
