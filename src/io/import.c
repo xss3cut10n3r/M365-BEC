@@ -75,7 +75,9 @@ static char *detect(Importer *im, const char *label) {
         // Recognize common JSON shapes.
         if (has_header(im, "creationtime") && has_header(im, "operation"))
             kind = "Purview audit";
-        else if (has_header(im, "createddatetime") && has_header(im, "userprincipalname"))
+        else if (has_header(im, "createddatetime") &&
+                 (has_header(im, "userprincipalname") || has_header(im, "serviceprincipalid") ||
+                  has_header(im, "signineventtypes")))
             kind = "Graph sign-ins";
         else if (has_header(im, "activitydatetime") && has_header(im, "activitydisplayname"))
             kind = "Graph directory audit";
@@ -282,7 +284,7 @@ gboolean importer_row(Importer *im, GPtrArray *values, const char *raw, const JV
     }
     if (im->json) {
         // JSON exports use other names.
-        prefer(&actor, g_strdup(GET(im, values, "userprincipalname", "userdisplayname")));
+        prefer(&actor, g_strdup(GET(im, values, "userprincipalname", "userdisplayname", "serviceprincipalname")));
         prefer(&actor, nested_text(record, "initiatedBy", "user", "userPrincipalName"));
         prefer(&actor, nested_text(record, "initiatedBy", "app", "displayName"));
         prefer(&stamp, g_strdup(GET(im, values, "createddatetime", "activitydatetime", "creationtime", "timegenerated",

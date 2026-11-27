@@ -14,7 +14,7 @@ const Slot SLOTS[] = {
     {"client", {"Client app", "clientAppUsed"}, {"ClientInfoString"}},
     {"authmethod", {"Authentication method"}, {NULL}},
     {"conditionalaccess", {"Conditional Access", "conditionalAccessStatus"}, {NULL}},
-    {"serviceprincipal", {"Service principal ID", "ActorServicePrincipalId"}, {NULL}},
+    {"serviceprincipal", {"Service principal ID", "ActorServicePrincipalId", "servicePrincipalId"}, {NULL}},
     {"workload", {"Service"}, {"Workload"}},
     {"messageid", {"message_id", "MessageId", "Message ID"}, {NULL}},
     {"recipient", {"recipient_address", "RecipientAddress", "Recipient address", "recipient_status"}, {NULL}},

@@ -783,6 +783,13 @@ static void test_pivots(void) {
     CHECK(count(db, "mailbox = \"target@example.org\"") == 1 && count(db, "target = t-1 AND actor = \"admin@example.org\"") == 1);
     CHECK(count(db, "actor = \"target@example.org\"") == 0 && count(db, "target = \"admin@example.org\"") == 0);
     CHECK(report_total(db, "consent", "Consent to application") == 1);
+    // Workload sign-ins have no user.
+    g_free(put("workload.json", "{\"createdDateTime\":\"2026-06-01T12:00:00Z\",\"id\":\"w-1\",\"signInEventTypes\":[\"servicePrincipal\"],"
+                                "\"servicePrincipalName\":\"Audit reader\",\"servicePrincipalId\":\"sp-2\","
+                                "\"appDisplayName\":\"Audit reader\",\"status\":{\"errorCode\":0}}"));
+    CHECK(load(db, "workload.json", NULL) == IMPORT_DONE);
+    CHECK(count(db, "source = \"Graph sign-ins\" AND actor = \"Audit reader\" AND serviceprincipal = sp-2") == 1);
+    CHECK(report_total(db, "outcomes", "Graph sign-ins") == 1);
     sqlite3_close(db);
 }
 
