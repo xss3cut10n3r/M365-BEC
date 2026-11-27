@@ -126,6 +126,7 @@ char *bql_field_list(void);
 extern const char *const VERDICTS[4];
 sqlite3 *case_connect(const char *path, GError **error);
 sqlite3 *case_read(const char *path, GError **error);
+void case_settle(sqlite3 *db);
 gboolean sql_run(sqlite3 *db, const char *sql, GError **error);
 gint64 sql_int(sqlite3 *db, const char *sql, GError **error);
 sqlite3_stmt *sql_prepare(sqlite3 *db, const char *sql, GError **error);

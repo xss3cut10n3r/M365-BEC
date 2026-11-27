@@ -185,6 +185,18 @@ static gboolean blocked_by_folder(sqlite3 *db) {
     return code == SQLITE_READONLY || code == SQLITE_CANTOPEN;
 }
 
+// Keeps the case file complete.
+void case_settle(sqlite3 *db) {
+    sqlite3_wal_checkpoint_v2(db, NULL, SQLITE_CHECKPOINT_PASSIVE, NULL, NULL);
+}
+
+static gboolean commit(sqlite3 *db, GError **error) {
+    if (!sql_run(db, "COMMIT", error))
+        return FALSE;
+    case_settle(db);
+    return TRUE;
+}
+
 sqlite3 *case_connect(const char *path, GError **error) {
     sqlite3 *db = NULL;
 #ifdef G_OS_UNIX
@@ -248,6 +260,7 @@ sqlite3 *case_connect(const char *path, GError **error) {
     }
     register_functions(db);
     sqlite3_exec(db, "PRAGMA journal_mode=WAL", NULL, NULL, NULL);
+    case_settle(db);
     return db;
 }
 
@@ -295,7 +308,7 @@ gboolean assign_verdict(sqlite3 *db, const char *kind, GPtrArray *pairs, const c
         g_propagate_error(error, problem);
         return FALSE;
     }
-    return sql_run(db, "COMMIT", error);
+    return commit(db, error);
 }
 
 // Marks every matching event.
@@ -338,7 +351,7 @@ gint64 mark_matches(sqlite3 *db, gint64 log, const char *query, const char *verd
         g_propagate_error(error, problem);
         return -1;
     }
-    return sql_run(db, "COMMIT", error) ? count : -1;
+    return commit(db, error) ? count : -1;
 }
 
 // Valid right after marking.
@@ -357,7 +370,7 @@ gboolean undo_verdict(sqlite3 *db, GError **error) {
         sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
         return FALSE;
     }
-    return sql_run(db, "COMMIT", error);
+    return commit(db, error);
 }
 
 char *select_sql(GPtrArray *custom, GPtrArray *args) {

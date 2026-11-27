@@ -585,6 +585,34 @@ static void test_read_only(void) {
 #endif
 }
 
+// Idle cases copy as one file.
+static void test_copy(void) {
+    sqlite3 *reader = open_case("live.bec"), *writer = open_case("live.bec");
+    g_free(put("live-a.csv", "Operation\nOne\n"));
+    g_free(put("live-b.csv", "Operation\nTwo\n"));
+    CHECK(load(reader, "live-a.csv", NULL) == IMPORT_DONE && count(reader, "") == 1);
+    CHECK(load(writer, "live-b.csv", NULL) == IMPORT_DONE);
+    CHECK(mark_matches(writer, 0, "operation = Two", "Bad", 0, NULL) == 1);
+    char *path = file("live.bec"), *copy = file("handoff.bec"), *bytes = NULL;
+    gsize size = 0;
+    CHECK(g_file_get_contents(path, &bytes, &size, NULL) && g_file_set_contents(copy, bytes, (gssize)size, NULL));
+    sqlite3 *copied = open_case("handoff.bec");
+    CHECK(count(copied, "") == 2 && count(copied, "verdict = Bad AND operation = Two") == 1);
+    CHECK(undo_verdict(writer, NULL));
+    g_free(bytes);
+    CHECK(g_file_get_contents(path, &bytes, &size, NULL));
+    sqlite3_close(copied);
+    CHECK(g_file_set_contents(copy, bytes, (gssize)size, NULL));
+    copied = open_case("handoff.bec");
+    CHECK(count(copied, "") == 2 && count(copied, "marked = true") == 0);
+    sqlite3_close(copied);
+    sqlite3_close(writer);
+    sqlite3_close(reader);
+    g_free(bytes);
+    g_free(path);
+    g_free(copy);
+}
+
 int main(void) {
     root = g_dir_make_tmp("bec-test-XXXXXX", NULL);
     test_text();
@@ -598,6 +626,7 @@ int main(void) {
     test_first_imports();
     test_permissions();
     test_read_only();
+    test_copy();
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

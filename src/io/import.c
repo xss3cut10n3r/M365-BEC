@@ -581,6 +581,7 @@ ImportState import_file(sqlite3 *db, const char *path, ProgressFn progress, gpoi
     g_free(im.kind);
     if (ok && sql_run(db, "COMMIT", error)) {
         state = IMPORT_DONE;
+        case_settle(db);
     } else {
         // Leave the case unchanged.
         sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);

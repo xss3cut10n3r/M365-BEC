@@ -6,6 +6,8 @@ Wireshark for Microsoft 365 email compromise. Open your Purview audit, Entra sig
 
 Logs are copied into one `.bec` case file with their SHA-256 hashes. Your original files are never changed.
 
+To hand a case over, copy the `.bec` file while nothing is importing or marking. Close the app first to be certain.
+
 **[Windows x64](https://github.com/xss3cut10n3r/M365-BEC/releases/latest/download/M365-BEC-windows-x64.zip)** | **[Linux x64](https://github.com/xss3cut10n3r/M365-BEC/releases/latest/download/M365-BEC-linux-x64.tar.gz)**
 
 ## Usage
