@@ -1,0 +1,10 @@
+__pycache__/
+/build/
+/dist/
+/samples/
+/preview/
+*.spec
+*.bec
+*.bec-journal
+*.bec-shm
+*.bec-wal
