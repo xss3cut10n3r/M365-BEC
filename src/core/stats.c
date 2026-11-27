@@ -3,7 +3,8 @@
 #include <string.h>
 
 #define CONSENT                                                                                               \
-    "source = \"Entra directory audit\" AND (operation contains \"consent\" OR operation contains "          \
+    "(source = \"Entra directory audit\" OR source = \"Graph directory audit\") AND "                        \
+    "(operation contains \"consent\" OR operation contains "                                                 \
     "\"application\" OR operation contains \"service principal\" OR operation contains \"app role\" OR "     \
     "operation contains \"permission grant\")"
 

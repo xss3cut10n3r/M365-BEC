@@ -743,6 +743,26 @@ static void test_handoff(void) {
     sqlite3_close(db);
 }
 
+// Group counts equal their drilldowns.
+static gint64 report_total(sqlite3 *db, const char *key, const char *label) {
+    GPtrArray *rows = stats_calculate(db, key, 0, "", 3600, NULL);
+    gint64 total = rows ? 0 : -1;
+    for (guint i = 0; rows && i < rows->len; i++) {
+        StatRow *row = rows->pdata[i];
+        char *drill = stats_drilldown(key, row, 3600);
+        if (count(db, drill) != row->count) {
+            printf("drill %s: %s\n", key, drill);
+            total = -1000000;
+        }
+        if (!label || !strcmp(row->values[0], label))
+            total += row->count;
+        g_free(drill);
+    }
+    if (rows)
+        g_ptr_array_free(rows, TRUE);
+    return total;
+}
+
 // Provider fields feed shared pivots.
 static void test_pivots(void) {
     sqlite3 *db = open_case("pivots.bec");
@@ -762,6 +782,7 @@ static void test_pivots(void) {
     CHECK(count(db, "ip = 192.0.2.1") == 1 && count(db, "target = \"target@example.org\"") == 1);
     CHECK(count(db, "mailbox = \"target@example.org\"") == 1 && count(db, "target = t-1 AND actor = \"admin@example.org\"") == 1);
     CHECK(count(db, "actor = \"target@example.org\"") == 0 && count(db, "target = \"admin@example.org\"") == 0);
+    CHECK(report_total(db, "consent", "Consent to application") == 1);
     sqlite3_close(db);
 }
 
