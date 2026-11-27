@@ -38,9 +38,6 @@ static const char CSS[] =
     ".paneBar { background: #333536; border-bottom: 1px solid #505355; padding: 2px 4px; }"
     ".caseName { font-weight: 600; color: #ffffff; background: #3d5566; border-radius: 3px; padding: 1px 9px; }"
     ".caseName.none { background: transparent; color: #b8bfc1; font-weight: 400; padding: 1px 2px; }"
-    ".caseBlock { border-left: 3px solid #b94f00; padding: 2px 0 4px 12px; margin-top: 8px; }"
-    ".caseBlock .heading { padding-top: 0; }"
-    ".caseTitle { font-size: 13pt; font-weight: 700; color: #ffffff; }"
     ".secondary { color: #b8bfc1; }"
     ".saved { color: #9fd9b4; }"
     "entry, textview, textview text, dropdown > button { background: #252728; color: #ededed; }"
@@ -52,24 +49,22 @@ static const char CSS[] =
     "entry.mono, .mono { font-family: Consolas, 'DejaVu Sans Mono', monospace; }"
     "entry selection, textview text selection { background: #6b537b; color: #ffffff; }"
     "dropdown > button { padding: 2px 5px; border: 1px solid #626568; border-radius: 2px; }"
-    "notebook { background: #2c2c2c; }"
-    "notebook > header { background: #2c2c2c; border: 0; padding: 0; min-height: 0; }"
-    "notebook > header tab { background: #252728; border: 0; border-top: 2px solid transparent; padding: 1px 4px 1px 7px;"
-    " margin: 0 1px 0 0; min-height: 0; border-radius: 0; color: #ededed; }"
-    "notebook > header tab:hover { background: #303334; }"
-    "notebook > header tab:checked { background: #383b3d; border-top: 2px solid #a4c9e9; }"
+    "notebook, notebook > header { background: #2c2c2c; border: 0; box-shadow: none; padding: 0; min-height: 0; }"
+    "notebook > header > tabs { margin: 0; padding: 0; }"
+    "notebook > header tab { background: #252728; border: 0; border-top: 2px solid transparent; padding: 4px 4px 4px 8px;"
+    " margin: 0 1px 0 0; min-height: 0; border-radius: 0; color: #ededed; box-shadow: none; outline: none; }"
+    "notebook > header tab:hover { background: #303334; box-shadow: none; }"
+    "notebook > header tab:checked { background: #383b3d; border-top: 2px solid #a4c9e9; box-shadow: none; }"
+    "notebook > header tab:focus, notebook > header tab:focus-visible { box-shadow: none; outline: none; }"
     "notebook > stack { min-height: 0; background: transparent; }"
-    "notebook > header, notebook > header > tabs, notebook > header tab, notebook > header tab:checked,"
-    "notebook > header tab:hover, notebook > header tab:focus { box-shadow: none; outline: none; border-bottom: 0;"
-    " border-left: 0; border-right: 0; }"
-    "button.closeButton { padding: 0 3px; border: 0; background: transparent; min-width: 16px; min-height: 16px;"
-    " font-size: 8pt; }"
+    "button.closeButton { padding: 0; border: 0; background: transparent; min-width: 22px; min-height: 22px;"
+    " border-radius: 2px; }"
     "button.closeButton:hover, button.closeButton:focus { background: #575b5e; }"
     "button.closeButton:active { background: #694449; }"
     "columnview, treeview, treeview.view, listview { background: #262829; color: #ededed; }"
     "columnview > header > button, treeview.view header button { background: #353739; border: 0; border-radius: 0;"
     " border-right: 1px solid #55585a; border-bottom: 1px solid #545758; padding: 3px 6px; color: #e3e6e7;"
-    " font-weight: 600; }"
+    " font-weight: 700; }"
     "columnview > listview > row { padding: 0; min-height: 0; }"
     "columnview > listview > row > cell { padding: 1px 4px; min-height: 0; }"
     "columnview > listview > row:nth-child(even), treeview.view:nth-child(even) { background: #2c2e2f; }"
@@ -88,8 +83,11 @@ static const char CSS[] =
     ".statusbar { background: #202122; border-top: 1px solid #515457; padding: 2px 6px; }"
     ".warning { color: #f0c68d; }"
     "tooltip, tooltip.background { background: #383b3d; color: #eeeeee; border: 1px solid #686d70; padding: 3px; }"
+    "button.link > label { text-decoration: none; }"
+    ".statusbar separator { background: #515457; min-width: 1px; margin: 2px 0; }"
     ".banner { background: #b94f00; color: #ffffff; padding: 7px 11px; border-radius: 3px; }"
     ".heading { font-size: 13pt; font-weight: 600; color: #bcc3c5; padding: 14px 0 6px 0; }"
+    ".caseFile { color: #ffffff; font-weight: 700; font-size: 15pt; padding-bottom: 2px; }"
     ".recent { background: #262829; }"
     ".recent row { padding: 3px 6px; }"
     ".recent row:nth-child(even) { background: #2c2e2f; }"
@@ -146,6 +144,11 @@ static void glyph_draw(GtkDrawingArea *area, cairo_t *cr, int width, int height,
     cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
     cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
     switch (spec->code) {
+    case 1:
+        cairo_set_line_width(cr, 2.0);
+        line(cr, 3.3, 3.3, 12.7, 12.7);
+        line(cr, 12.7, 3.3, 3.3, 12.7);
+        break;
     case 0xE8E5:
         path(cr, 5, (double[]){4, 2.5, 9.5, 2.5, 12, 5, 12, 13.5, 4, 13.5}, TRUE);
         path(cr, 3, (double[]){9.5, 2.5, 9.5, 5, 12, 5}, FALSE);
@@ -281,8 +284,14 @@ GtkWidget *glyph_button(guint code, const char *fallback, const char *color, con
 }
 
 GtkWidget *close_button(const char *tip) {
-    GtkWidget *button = gtk_button_new_with_label("\xe2\x9c\x95");
+    GtkWidget *button = gtk_button_new();
+    GtkWidget *cross = glyph(1, "", "#e4e7e8");
+    gtk_widget_set_size_request(cross, 15, 15);
+    gtk_widget_set_halign(cross, GTK_ALIGN_CENTER);
+    gtk_widget_set_valign(cross, GTK_ALIGN_CENTER);
+    gtk_button_set_child(GTK_BUTTON(button), cross);
     gtk_widget_add_css_class(button, "closeButton");
+    gtk_widget_set_size_request(button, 22, 22);
     gtk_widget_set_tooltip_text(button, tip);
     gtk_accessible_update_property(GTK_ACCESSIBLE(button), GTK_ACCESSIBLE_PROPERTY_LABEL, tip, -1);
     gtk_widget_set_valign(button, GTK_ALIGN_CENTER);

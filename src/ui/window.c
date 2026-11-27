@@ -204,7 +204,7 @@ static int make_tab(App *app, gint64 key) {
     *stored = key;
     g_object_set_data_full(G_OBJECT(page), "key", stored, g_free);
     g_object_set_data_full(G_OBJECT(page), "label", g_strdup(label), g_free);
-    GtkWidget *header = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+    GtkWidget *header = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     GtkWidget *text = gtk_label_new(label);
     if (g_utf8_strlen(label, -1) > 30) {
         gtk_label_set_ellipsize(GTK_LABEL(text), PANGO_ELLIPSIZE_MIDDLE);
@@ -622,18 +622,8 @@ static void update_case_bar(App *app) {
     gtk_label_set_text(GTK_LABEL(app->case_name), name);
     gtk_widget_remove_css_class(app->case_name, "none");
     gtk_widget_set_tooltip_text(app->case_name, app->path);
-    gint64 events = 0;
-    for (guint i = 0; i < app->logs->len; i++)
-        events += ((LogInfo *)app->logs->pdata[i])->total;
-    gint64 files = sql_int(app->db, "SELECT count(*) FROM files", NULL);
-    char *total = group_digits(events);
-    char *counts = g_strdup_printf("%" G_GINT64_FORMAT " evidence file(s)  \xc2\xb7  %u log(s)  \xc2\xb7  %s events", files,
-                                   app->logs->len, total);
     gtk_label_set_text(GTK_LABEL(app->welcome_title), name);
     gtk_label_set_text(GTK_LABEL(app->welcome_text), app->path);
-    gtk_label_set_text(GTK_LABEL(app->case_detail), counts);
-    g_free(counts);
-    g_free(total);
     g_free(title);
     g_free(name);
 }
@@ -1715,25 +1705,18 @@ static GtkWidget *build_welcome(App *app) {
     gtk_box_append(GTK_BOX(page), row);
     GtkWidget *left = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_widget_set_hexpand(left, TRUE);
-    app->welcome_case = gtk_box_new(GTK_ORIENTATION_VERTICAL, 3);
-    gtk_widget_add_css_class(app->welcome_case, "caseBlock");
-    gtk_box_append(GTK_BOX(app->welcome_case), left_label("Case", "heading"));
-    app->welcome_title = left_label("", "caseTitle");
+    app->welcome_case = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_box_append(GTK_BOX(app->welcome_case), left_label("Current case", "heading"));
+    app->welcome_title = left_label("", "caseFile");
+    gtk_box_append(GTK_BOX(app->welcome_case), app->welcome_title);
     app->welcome_text = left_label("", "secondary");
     gtk_label_set_ellipsize(GTK_LABEL(app->welcome_text), PANGO_ELLIPSIZE_MIDDLE);
     gtk_label_set_selectable(GTK_LABEL(app->welcome_text), TRUE);
-    app->case_detail = left_label("", "secondary");
-    GtkWidget *note = left_label("Changes save to this case automatically. Logs are copied in; original files are never changed.",
-                                 "secondary");
-    gtk_box_append(GTK_BOX(app->welcome_case), app->welcome_title);
     gtk_box_append(GTK_BOX(app->welcome_case), app->welcome_text);
-    gtk_box_append(GTK_BOX(app->welcome_case), app->case_detail);
-    gtk_box_append(GTK_BOX(app->welcome_case), note);
     GtkWidget *case_buttons = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
-    gtk_widget_set_margin_top(case_buttons, 6);
+    gtk_widget_set_margin_top(case_buttons, 10);
     gtk_box_append(GTK_BOX(case_buttons), plain_button("Add logs\xe2\x80\xa6", "win.open"));
     gtk_box_append(GTK_BOX(case_buttons), plain_button("All case events", "win.all"));
-    gtk_box_append(GTK_BOX(case_buttons), plain_button("Evidence details\xe2\x80\xa6", "win.quality"));
     gtk_box_append(GTK_BOX(case_buttons), plain_button("Close case", "win.close-case"));
     gtk_box_append(GTK_BOX(app->welcome_case), case_buttons);
     gtk_box_append(GTK_BOX(left), app->welcome_case);
