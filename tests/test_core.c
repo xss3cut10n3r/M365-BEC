@@ -4,6 +4,12 @@
 #include <stdio.h>
 #include <string.h>
 
+#ifdef G_OS_WIN32
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
+
 static int failures, checks;
 static char *root;
 
@@ -377,6 +383,54 @@ static void test_statistics(void) {
     sqlite3_close(db);
 }
 
+static char *slurp(const char *path) {
+    char *text = NULL;
+    g_file_get_contents(path, &text, NULL, NULL);
+    return text ? text : g_strdup("");
+}
+
+static gboolean export_to(sqlite3 *db, const char *path, const char *filter) {
+    return export_events(db, path, 0, filter, FALSE, "time", NULL, NULL);
+}
+
+// Aliases reach the same file.
+static void test_aliases(void) {
+    sqlite3 *db = open_case("alias.bec");
+    char *real = file("real"), *alias = file("alias"), *hard = file("hard.csv");
+    g_mkdir(real, 0700);
+    char *source = g_build_filename(real, "ev.csv", NULL), *via = g_build_filename(alias, "ev.csv", NULL);
+    char *other = g_build_filename(alias, "other.csv", NULL);
+    g_file_set_contents(source, "Operation\nOne\n", -1, NULL);
+#ifdef G_OS_WIN32
+    char *command = g_strdup_printf("cmd /c mklink /J \"%s\" \"%s\"", alias, real);
+    g_spawn_command_line_sync(command, NULL, NULL, NULL, NULL);
+    g_free(command);
+    CreateHardLinkA(hard, source, NULL);
+#else
+    CHECK(symlink(real, alias) == 0);
+    CHECK(link(source, hard) == 0);
+#endif
+    CHECK(g_file_test(via, G_FILE_TEST_EXISTS) && g_file_test(hard, G_FILE_TEST_EXISTS));
+    CHECK(import_file(db, source, NULL, NULL, NULL) == IMPORT_DONE);
+    CHECK(!export_to(db, source, "") && !export_to(db, via, "") && !export_to(db, hard, ""));
+    CHECK(!extract_evidence(db, 1, via, NULL));
+    CHECK(export_to(db, other, ""));
+    char *kept = slurp(source);
+    CHECK(!strcmp(kept, "Operation\nOne\n"));
+    // Deleted evidence keeps its name.
+    g_remove(hard);
+    g_remove(source);
+    CHECK(!export_to(db, via, ""));
+    g_free(kept);
+    g_free(real);
+    g_free(alias);
+    g_free(hard);
+    g_free(source);
+    g_free(via);
+    g_free(other);
+    sqlite3_close(db);
+}
+
 int main(void) {
     root = g_dir_make_tmp("bec-test-XXXXXX", NULL);
     test_text();
@@ -384,6 +438,7 @@ int main(void) {
     test_json();
     test_statistics();
     test_consistency();
+    test_aliases();
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

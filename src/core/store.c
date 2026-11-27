@@ -3,6 +3,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef G_OS_WIN32
+#include <windows.h>
+#else
+#include <sys/stat.h>
+#endif
+
 static const char *const DDL[] = {
     "CREATE TABLE files(id INTEGER PRIMARY KEY, path TEXT, digest TEXT, size INTEGER, UNIQUE(path,digest))",
     "CREATE TABLE chunks(file INTEGER, part INTEGER, data BLOB, PRIMARY KEY(file,part))",
@@ -388,18 +394,74 @@ char *absolute_path(const char *path) {
 #endif
 }
 
-static gboolean same_path(const char *left, const char *right) {
-    char *a = absolute_path(left), *b = absolute_path(right);
+// Names one existing file.
+static gboolean file_identity(const char *path, guint64 identity[3]) {
 #ifdef G_OS_WIN32
-    char *fa = casefold(a), *fb = casefold(b);
-    gboolean same = !strcmp(fa, fb);
-    g_free(fa);
-    g_free(fb);
+    wchar_t *wide = g_utf8_to_utf16(path, -1, NULL, NULL, NULL);
+    if (!wide)
+        return FALSE;
+    HANDLE handle = CreateFileW(wide, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                                OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    g_free(wide);
+    if (handle == INVALID_HANDLE_VALUE)
+        return FALSE;
+    BY_HANDLE_FILE_INFORMATION info;
+    gboolean ok = GetFileInformationByHandle(handle, &info);
+    CloseHandle(handle);
+    if (ok) {
+        identity[0] = info.dwVolumeSerialNumber;
+        identity[1] = info.nFileIndexHigh;
+        identity[2] = info.nFileIndexLow;
+    }
+    return ok;
 #else
-    gboolean same = !strcmp(a, b);
+    struct stat info;
+    if (stat(path, &info) != 0)
+        return FALSE;
+    identity[0] = (guint64)info.st_dev;
+    identity[1] = (guint64)info.st_ino;
+    identity[2] = 0;
+    return TRUE;
 #endif
+}
+
+static gboolean same_identity(const char *left, const char *right, gboolean *known) {
+    guint64 a[3], b[3];
+    *known = file_identity(left, a) && file_identity(right, b);
+    return *known && a[0] == b[0] && a[1] == b[1] && a[2] == b[2];
+}
+
+static gboolean same_text(const char *left, const char *right) {
+#ifdef G_OS_WIN32
+    char *a = casefold(left), *b = casefold(right);
+    gboolean same = !strcmp(a, b);
     g_free(a);
     g_free(b);
+    return same;
+#else
+    return !strcmp(left, right);
+#endif
+}
+
+// Compares files, not spellings.
+gboolean same_file(const char *left, const char *right) {
+    gboolean known = FALSE;
+    gboolean same = same_identity(left, right, &known);
+    if (known)
+        return same;
+    char *a = absolute_path(left), *b = absolute_path(right);
+    // Missing files share parent folders.
+    char *folder_a = g_path_get_dirname(a), *folder_b = g_path_get_dirname(b);
+    char *name_a = g_path_get_basename(a), *name_b = g_path_get_basename(b);
+    same = same_identity(folder_a, folder_b, &known) && same_text(name_a, name_b);
+    if (!known)
+        same = same_text(a, b);
+    g_free(a);
+    g_free(b);
+    g_free(folder_a);
+    g_free(folder_b);
+    g_free(name_a);
+    g_free(name_b);
     return same;
 }
 
@@ -407,7 +469,7 @@ gboolean guard_destination(sqlite3 *db, const char *destination, GError **error)
     gboolean clash = FALSE;
     sqlite3_stmt *statement = sql_prepare(db, "SELECT path FROM files", NULL);
     while (statement && !clash && sqlite3_step(statement) == SQLITE_ROW)
-        clash = same_path(destination, column_text(statement, 0));
+        clash = same_file(destination, column_text(statement, 0));
     sqlite3_finalize(statement);
     statement = sql_prepare(db, "PRAGMA database_list", NULL);
     if (statement && sqlite3_step(statement) == SQLITE_ROW) {
@@ -415,7 +477,7 @@ gboolean guard_destination(sqlite3 *db, const char *destination, GError **error)
         static const char *const suffixes[] = {"", "-wal", "-shm", "-journal"};
         for (guint i = 0; i < G_N_ELEMENTS(suffixes) && !clash; i++) {
             char *path = g_strconcat(base, suffixes[i], NULL);
-            clash = same_path(destination, path);
+            clash = same_file(destination, path);
             g_free(path);
         }
     }

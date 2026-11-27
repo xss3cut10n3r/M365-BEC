@@ -142,6 +142,7 @@ char *where_sql(gint64 log, const char *query, GPtrArray *args, GError **error);
 sqlite3_stmt *query_rows(sqlite3 *db, gint64 log, const char *query, gboolean descending, const char *order_by,
                          GPtrArray *custom, GError **error);
 gint64 count_rows(sqlite3 *db, gint64 log, const char *query, GError **error);
+gboolean same_file(const char *left, const char *right);
 gboolean guard_destination(sqlite3 *db, const char *destination, GError **error);
 char *absolute_path(const char *path);
 const char *column_text(sqlite3_stmt *statement, int index);
