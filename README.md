@@ -12,7 +12,7 @@ To hand a case over, copy the `.bec` file while nothing is importing or marking.
 
 ## Usage
 
-1. Extract and run `M365-BEC.exe` (Linux: `./m365-bec`).
+1. Extract and run `M365-BEC.exe` (Linux: `./m365-bec`, or `./install-desktop.sh` for a menu launcher).
 2. Click **Open logs** and pick CSV, Excel, or JSON exports. Save the case when asked.
 3. Select an event to see its fields and its original record.
 4. Right-click a value and choose **Apply as Filter**, or type a filter above the timeline.

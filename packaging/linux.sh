@@ -28,13 +28,22 @@ export XDG_DATA_DIRS="$HERE/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
 exec "$HERE/bin/m365-bec-bin" "$@"
 EOF
 chmod +x "$OUT/m365-bec"
-cat > "$OUT/m365-bec.desktop" <<'EOF'
+cat > "$OUT/install-desktop.sh" <<'EOF'
+#!/bin/sh
+# Add a launcher for this folder.
+HERE=$(dirname "$(readlink -f "$0")")
+APPS="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+mkdir -p "$APPS"
+cat > "$APPS/m365-bec.desktop" <<ENTRY
 [Desktop Entry]
 Type=Application
 Name=M365 Email Log Analyzer
-Exec=m365-bec %F
-Icon=m365-bec
+Exec="$HERE/m365-bec" %F
+Icon=$HERE/share/icons/hicolor/256x256/apps/m365-bec.png
 Categories=Utility;Security;
+ENTRY
+echo "Installed $APPS/m365-bec.desktop"
 EOF
+chmod +x "$OUT/install-desktop.sh"
 tar -C dist/linux -czf dist/linux/M365-BEC-linux-x64.tar.gz M365-BEC
 du -sh "$OUT" dist/linux/M365-BEC-linux-x64.tar.gz
