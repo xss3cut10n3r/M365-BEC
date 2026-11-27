@@ -75,8 +75,6 @@ int main(int argc, char **argv) {
     g_setenv("GTK_CSD", "0", FALSE);
     // Software drawing starts faster.
     g_setenv("GSK_RENDERER", "cairo", FALSE);
-    // Windows IME breaks maximize.
-    g_setenv("GTK_IM_MODULE", "gtk-im-context-simple", FALSE);
 #endif
     GtkApplication *gtk = gtk_application_new("io.github.xss3cut10n3r.M365BEC", G_APPLICATION_NON_UNIQUE);
     g_signal_connect(gtk, "activate", G_CALLBACK(activate), NULL);

@@ -303,6 +303,29 @@ void copy_text(GtkWidget *widget, const char *text) {
     gdk_clipboard_set_text(gtk_widget_get_clipboard(widget), text ? text : "");
 }
 
+#ifdef G_OS_WIN32
+static LRESULT CALLBACK guard_proc(HWND handle, UINT message, WPARAM wparam, LPARAM lparam) {
+    WNDPROC next = (WNDPROC)GetPropW(handle, L"becNext");
+    if (message == WM_WINDOWPOSCHANGING && IsZoomed(handle) && !IsIconic(handle)) {
+        WINDOWPOS *pos = (WINDOWPOS *)lparam;
+        RECT now;
+        GetWindowRect(handle, &now);
+        if (!(pos->flags & SWP_NOSIZE)) {
+            int x = pos->flags & SWP_NOMOVE ? now.left : pos->x, y = pos->flags & SWP_NOMOVE ? now.top : pos->y;
+            RECT want = {x, y, x + pos->cx, y + pos->cy};
+            MONITORINFO info = {.cbSize = sizeof info};
+            GetMonitorInfoW(MonitorFromRect(&want, MONITOR_DEFAULTTONEAREST), &info);
+            // GTK shrinks maximized windows.
+            if (pos->cx < info.rcWork.right - info.rcWork.left || pos->cy < info.rcWork.bottom - info.rcWork.top)
+                pos->flags |= SWP_NOSIZE | SWP_NOMOVE;
+        }
+    }
+    if (message == WM_NCDESTROY)
+        RemovePropW(handle, L"becNext");
+    return CallWindowProcW(next, handle, message, wparam, lparam);
+}
+#endif
+
 void caption_colors(GtkWindow *window) {
 #ifdef G_OS_WIN32
     GdkSurface *surface = gtk_native_get_surface(GTK_NATIVE(window));
@@ -313,6 +336,10 @@ void caption_colors(GtkWindow *window) {
     COLORREF caption = 0x008BCCAA, text = 0x00192014;
     DwmSetWindowAttribute(handle, 35, &caption, sizeof caption);
     DwmSetWindowAttribute(handle, 36, &text, sizeof text);
+    if (!GetPropW(handle, L"becNext")) {
+        SetPropW(handle, L"becNext", (HANDLE)GetWindowLongPtrW(handle, GWLP_WNDPROC));
+        SetWindowLongPtrW(handle, GWLP_WNDPROC, (LONG_PTR)guard_proc);
+    }
 #else
     (void)window;
 #endif
