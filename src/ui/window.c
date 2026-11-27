@@ -8,6 +8,7 @@ static void update_actions(App *app);
 static void go_home(App *app);
 static void refresh_logs(App *app);
 static void update_case_bar(App *app);
+static void adopt_case(App *app, sqlite3 *db, char *absolute, gboolean create);
 
 /* Settings. */
 
@@ -732,6 +733,11 @@ gboolean app_load(App *app, const char *path, gboolean create) {
         g_free(absolute);
         return FALSE;
     }
+    adopt_case(app, db, absolute, create);
+    return TRUE;
+}
+
+static void adopt_case(App *app, sqlite3 *db, char *absolute, gboolean create) {
     cancel_query(app);
     timeline_reset(app->timeline, NULL, NULL);
     inspector_clear(app->inspector);
@@ -764,7 +770,70 @@ gboolean app_load(App *app, const char *path, gboolean create) {
         g_free(message);
     }
     g_free(name);
-    return TRUE;
+}
+
+/* Existing cases open off-thread. */
+
+typedef struct {
+    App *app;
+    char *path, *error;
+    sqlite3 *db;
+} OpenJob;
+
+static void show_opening(App *app, gboolean opening) {
+    gtk_widget_set_sensitive(app->pages, !opening);
+    gtk_widget_set_cursor_from_name(GTK_WIDGET(app->window), opening ? "progress" : NULL);
+}
+
+static gboolean open_done(gpointer data) {
+    OpenJob *job = data;
+    App *app = job->app;
+    app->busy = FALSE;
+    show_opening(app, FALSE);
+    if (job->db) {
+        adopt_case(app, job->db, job->path, FALSE);
+    } else {
+        app_alert(app, "Open case", job->error);
+        app_message(app, "Case was not opened");
+        g_free(job->path);
+    }
+    g_free(job->error);
+    g_free(job);
+    return G_SOURCE_REMOVE;
+}
+
+static gpointer open_run(gpointer data) {
+    OpenJob *job = data;
+    GError *error = NULL;
+    job->db = case_connect(job->path, &error);
+    if (error) {
+        job->error = g_strdup(error->message);
+        g_clear_error(&error);
+    }
+    g_idle_add(open_done, job);
+    return NULL;
+}
+
+void app_open(App *app, const char *path) {
+    if (app_busy(app))
+        return;
+    char *absolute = absolute_path(path);
+    if (!g_file_test(absolute, G_FILE_TEST_IS_REGULAR)) {
+        app_alert(app, "Open case", "Case file could not be found.");
+        g_free(absolute);
+        return;
+    }
+    OpenJob *job = g_new0(OpenJob, 1);
+    job->app = app;
+    job->path = absolute;
+    char *name = g_path_get_basename(absolute);
+    char *message = g_strdup_printf("Opening case %s\xe2\x80\xa6 Older cases are upgraded once, which can take a while.", name);
+    app_message(app, message);
+    g_free(message);
+    g_free(name);
+    app->busy = TRUE;
+    show_opening(app, TRUE);
+    g_thread_unref(g_thread_new("open-case", open_run, job));
 }
 
 static void go_home(App *app) {
@@ -1078,7 +1147,7 @@ static void case_chosen(GObject *source, GAsyncResult *result, gpointer user) {
     if (!file)
         return;
     char *path = g_file_get_path(file);
-    app_load(user, path, FALSE);
+    app_open(user, path);
     g_free(path);
     g_object_unref(file);
 }
@@ -1349,7 +1418,7 @@ static void activate(GSimpleAction *action, GVariant *parameter, gpointer user) 
             g_object_unref(file);
         }
     } else if (!strcmp(name, "recent")) {
-        app_load(app, text, FALSE);
+        app_open(app, text);
     } else if (!strcmp(name, "clear-recent")) {
         g_key_file_remove_key(app->settings, "cases", "recentCases", NULL);
         settings_save(app);
@@ -1717,7 +1786,7 @@ static GtkWidget *left_label(const char *text, const char *css) {
 static void recent_activated(GtkListBox *list, GtkListBoxRow *row, gpointer user) {
     (void)list;
     GtkWidget *child = gtk_list_box_row_get_child(row);
-    app_load(user, g_object_get_data(G_OBJECT(child), "path"), FALSE);
+    app_open(user, g_object_get_data(G_OBJECT(child), "path"));
 }
 
 static GtkWidget *build_welcome(App *app) {
@@ -1808,7 +1877,7 @@ static gboolean files_dropped(GtkDropTarget *target, const GValue *value, double
         g_ptr_array_add(paths, path);
     }
     if (paths->len == 1 && cases == 1) {
-        app_load(app, paths->pdata[0], FALSE);
+        app_open(app, paths->pdata[0]);
         g_ptr_array_free(paths, TRUE);
     } else if (cases) {
         app_alert(app, APP_TITLE, "Open one case, then drop its log files.");

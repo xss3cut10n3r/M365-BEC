@@ -79,6 +79,7 @@ void app_message(App *app, const char *text);
 void app_alert(App *app, const char *title, const char *detail);
 gboolean app_busy(App *app);
 gboolean app_load(App *app, const char *path, gboolean create);
+void app_open(App *app, const char *path);
 void app_apply(App *app, const char *text);
 void app_apply_in(App *app, gint64 log, const char *text);
 void app_prepare(App *app, const char *text);

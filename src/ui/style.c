@@ -91,6 +91,7 @@ static const char CSS[] =
     ".recent { background: #262829; }"
     ".recent row { padding: 3px 6px; }"
     ".recent row:nth-child(even) { background: #2c2e2f; }"
+    ".recent row:selected, .recent row:nth-child(even):selected { background: #474b4e; color: #ffffff; }"
     ".plot { background: #242729; }"
     "scrollbar { background: #2c2c2c; }"
     "scrollbar slider { background: #5a5d5f; min-width: 8px; min-height: 8px; border-radius: 4px; }"
